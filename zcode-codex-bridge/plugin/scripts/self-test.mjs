@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -7,7 +7,7 @@ import { EventEmitter } from "node:events";
 import { PassThrough, Writable } from "node:stream";
 import { callTool, handleGateway, loadBinding, readBoundThread, sendFixedReplyTest, tools } from "./server.mjs";
 import { recordProbe } from "../hooks/probe.mjs";
-import { hostOperation } from "./host-client.mjs";
+import { hostOperation, loadHostConfig } from "./host-client.mjs";
 
 const root = mkdtempSync(join(tmpdir(), "zcode-codex-bridge-"));
 try {
@@ -134,6 +134,61 @@ try {
   const hostConfigPath = join(root, "host-config.json");
   const hostConfig = { script, pipePath: "\\\\.\\pipe\\test-only", threadId: binding.threadId, cwd: cwdAlias, expiresAt: binding.expiresAt };
   writeFileSync(hostConfigPath, JSON.stringify(hostConfig));
+  let statusExternalCalls = 0;
+  const forbiddenStatusCall = () => { statusExternalCalls++; throw Error("Status must stay offline"); };
+  const statusDeps = { env, host: forbiddenStatusCall, read: forbiddenStatusCall, send: forbiddenStatusCall };
+  const configured = await callTool("codex_binding_status", {}, statusDeps);
+  assert.equal(configured.state, "configured"); assert(configured.hostReportConfigured);
+  assert.equal(configured.connectionVerified, false); assert.deepEqual(configured.diagnostics, []);
+  for (const [envPatch, hostPatch, codes] of [
+    [{ ZCC_BINDING_EXPIRES_AT: "2000-01-01T00:00:00Z" }, {}, ["binding_invalid"]],
+    [{ ZCC_BINDING_EXPIRES_AT: "invalid" }, {}, ["binding_invalid"]],
+    [{}, { threadId: "other" }, ["host_task_mismatch"]],
+    [{}, { cwd: root }, ["host_cwd_mismatch"]],
+    [{}, { expiresAt: "2000-01-01T00:00:00Z" }, ["host_expired"]],
+    [{}, { script: join(root, "missing-adapter.mjs") }, ["host_adapter_unavailable"]],
+    [{}, { pipePath: "invalid-secret-pipe" }, ["host_pipe_invalid"]],
+    [{ ZCC_BINDING_EXPIRES_AT: "2000-01-01T00:00:00Z" },
+      { threadId: "other", expiresAt: "2000-01-01T00:00:00Z", script: join(root, "missing-adapter.mjs") },
+      ["binding_invalid", "host_task_mismatch", "host_expired", "host_adapter_unavailable"]]
+  ]) {
+    const savedHost = JSON.stringify({ ...hostConfig, ...hostPatch });
+    writeFileSync(hostConfigPath, savedHost);
+    const filesBefore = readdirSync(root).sort();
+    const result = await callTool("codex_binding_status", {}, { ...statusDeps, env: { ...env, ...envPatch } });
+    assert.equal(result.state, "blocked"); assert.equal(result.hostReportConfigured, false);
+    assert.deepEqual(result.diagnostics.map(issue => issue.code), codes);
+    assert.equal(result.connectionVerified, false);
+    assert(!JSON.stringify(result).includes(JSON.stringify(hostConfig.pipePath)));
+    assert(!JSON.stringify(result).includes("invalid-secret-pipe"));
+    assert.equal(readFileSync(hostConfigPath, "utf8"), savedHost);
+    assert.deepEqual(readdirSync(root).sort(), filesBefore, "Status does not create receipts or data");
+    if (Object.keys(hostPatch).length) assert.throws(() => loadHostConfig(root, binding), "Operational host validation must remain strict");
+  }
+  writeFileSync(hostConfigPath, "null");
+  assert.equal((await callTool("codex_binding_status", {}, statusDeps)).diagnostics[0].code, "host_config_unreadable");
+  writeFileSync(hostConfigPath, JSON.stringify(hostConfig));
+  const expiredEnv = { ...env, ZCC_BINDING_EXPIRES_AT: "2000-01-01T00:00:00Z" };
+  for (const name of ["codex_thread_read", "codex_host_report"])
+    await assert.rejects(callTool(name, name === "codex_host_report" ? { requestId: "status-must-not-send" } : {},
+      { ...statusDeps, env: expiredEnv }), /expiry/);
+  await handleGateway({ jsonrpc: "2.0", id: 5, method: "tools/call", params: { name: "codex_binding_status", arguments: {} } }, state,
+    { send: value => messages.push(value), invoke: (name, args) => callTool(name, args, { ...statusDeps, env: expiredEnv }) });
+  assert.equal(messages.at(-1).error, undefined);
+  assert.equal(JSON.parse(messages.at(-1).result.content[0].text).diagnostics[0].code, "binding_invalid");
+  const absentData = join(root, "status-must-not-create");
+  const absentStatus = await callTool("codex_binding_status", {}, { ...statusDeps, env: { ...env, ZCODE_PLUGIN_DATA: absentData } });
+  assert.equal(absentStatus.diagnostics[0].code, "host_config_missing"); assert(!existsSync(absentData));
+  const unsetStatus = await callTool("codex_binding_status", {}, { ...statusDeps, env: {} });
+  assert.deepEqual(unsetStatus.diagnostics.map(issue => issue.code), ["binding_invalid", "data_path_missing"]);
+  for (const [file, code] of [["send-ledger.json", "receipts_unreadable"], ["hook-events.json", "hook_probe_unreadable"]]) {
+    const path = join(root, file), previous = existsSync(path) ? readFileSync(path, "utf8") : null;
+    writeFileSync(path, "{");
+    const result = await callTool("codex_binding_status", {}, statusDeps);
+    assert.equal(result.diagnostics[0].code, code);
+    if (previous === null) rmSync(path); else writeFileSync(path, previous);
+  }
+  assert.equal(statusExternalCalls, 0, "Status never invokes host, read, or send transports");
   let hostSends = 0;
   function hostTransport({ wrongTarget = false, lostAck = false, expireBeforeSend = false, idle = false, unloaded = false, requireIdle = false } = {}) {
     return { timeoutMs: 50, requireIdle, spawnProcess: (_node, args, options) => {
@@ -206,5 +261,5 @@ try {
 
   for (const relative of ["../.zcode-plugin/plugin.json", "../.mcp.json", "../../marketplace.json", "../hooks/hooks.json"])
     JSON.parse(readFileSync(fileURLToPath(new URL(relative, import.meta.url)), "utf8"));
-  console.log("zcode-codex-bridge: offline transport, host adapter, concurrent dedup, lost acknowledgement, expiry, target check, no history exposure, legacy send lock, MCP lifecycle, Hook probe and manifests OK");
+  console.log("zcode-codex-bridge: offline binding diagnostics (zero send/write), host adapter, concurrent dedup, lost acknowledgement, expiry, target check, no history exposure, legacy send lock, MCP lifecycle, Hook probe and manifests OK");
 } finally { rmSync(root, { recursive: true, force: true }); }

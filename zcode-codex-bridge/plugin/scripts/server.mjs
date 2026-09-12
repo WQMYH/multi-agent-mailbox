@@ -16,7 +16,7 @@ export const tools = [
   },
   {
     name: "codex_binding_status",
-    description: "Show the fixed local ZCode-to-Codex binding, expiry, receipt counts, and metadata-only Hook probe summary. This does not contact Codex.",
+    description: "Inspect the fixed local binding, configuration errors (including expiry), receipt counts, and metadata-only Hook probe summary. Never creates data or contacts Codex; configured does not prove a live connection.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
   },
@@ -275,21 +275,43 @@ function validateArgs(name, args) {
   if (name === "codex_fixed_reply_test" && (keys.length !== 1 || !/^[A-Za-z0-9._:-]{1,128}$/.test(args.requestId ?? ""))) throw Error("Invalid requestId");
 }
 
+function bindingStatus({ env = process.env, binding, root } = {}) {
+  const diagnostics = [];
+  let bindingValid = false, hostReportConfigured = false, receipts = null, hookProbe = null;
+  try { binding ??= loadBinding(env); bindingValid = true; }
+  catch (error) { diagnostics.push({ scope: "binding", code: "binding_invalid",
+    message: error.code ? "Cannot read configured binding paths" : error.message }); }
+  // An invalid binding remains display-only; no read/send operation uses this fallback.
+  const info = binding ?? { sourceSessionId: env.ZCC_SOURCE_SESSION_ID ?? null, threadId: env.ZCC_CODEX_THREAD_ID ?? null,
+    cwd: env.ZCC_CODEX_CWD ?? null, teamId: env.ZCC_TEAM_ID ?? null,
+    expiresAt: env.ZCC_BINDING_EXPIRES_AT ?? null, expectedReply: env.ZCC_EXPECTED_REPLY ?? null };
+  try { root ??= resolve(required(env, "ZCODE_PLUGIN_DATA")); }
+  catch { diagnostics.push({ scope: "storage", code: "data_path_missing", message: "Missing plugin configuration: ZCODE_PLUGIN_DATA" }); }
+  if (root) {
+    try { loadHostConfig(root, info); hostReportConfigured = bindingValid; }
+    catch (error) { diagnostics.push(...(error.diagnostics ?? [{ code: "host_config_unreadable", message: "Cannot inspect host configuration" }])
+      .map(issue => ({ scope: "host", ...issue }))); }
+    try {
+      receipts = Object.values(readLedger(root).records).reduce((result, record) => ({ ...result, [record.state]: (result[record.state] ?? 0) + 1 }), {});
+    } catch { diagnostics.push({ scope: "receipts", code: "receipts_unreadable", message: "Cannot read send ledger" }); }
+    try { hookProbe = probeSummary(root); }
+    catch { diagnostics.push({ scope: "hook_probe", code: "hook_probe_unreadable", message: "Cannot read Hook probe metadata" }); }
+  }
+  return { state: diagnostics.length ? "blocked" : "configured", bindingValid, connectionVerified: false, diagnostics,
+    sourceSessionId: info.sourceSessionId, sourceIdentityAuthenticated: false, threadId: info.threadId, cwd: info.cwd,
+    teamId: info.teamId, teamIdAuthorizes: false, expiresAt: info.expiresAt, expectedReply: info.expectedReply,
+    fixedReplyTestEnabled: false, hostReportConfigured, receipts, hookProbe };
+}
+
 export async function callTool(name, args = {}, deps = {}) {
   if (!tools.some(tool => tool.name === name)) throw Error("Unknown tool");
   validateArgs(name, args);
   if (name === "codex_fixed_reply_test" && !deps.send) return { state: "blocked", sent: false,
     reason: "Live sending disabled: host ownership and test permission decision required" };
+  if (name === "codex_binding_status") return bindingStatus(deps);
   const binding = deps.binding ?? loadBinding(deps.env);
   const root = deps.root ?? dataDir(deps.env);
   if (name === "codex_host_report") return (deps.host ?? hostOperation)(binding, root, args.requestId, { requireIdle: args.requireIdle === true });
-  if (name === "codex_binding_status") {
-    const ledger = readLedger(root);
-    const counts = Object.values(ledger.records).reduce((result, record) => ({ ...result, [record.state]: (result[record.state] ?? 0) + 1 }), {});
-    return { sourceSessionId: binding.sourceSessionId, sourceIdentityAuthenticated: false, threadId: binding.threadId, cwd: binding.cwd,
-      teamId: binding.teamId, teamIdAuthorizes: false, expiresAt: binding.expiresAt, expectedReply: binding.expectedReply, fixedReplyTestEnabled: false,
-      hostReportConfigured: (() => { try { loadHostConfig(root, binding); return true; } catch { return false; } })(), receipts: counts, hookProbe: probeSummary(root) };
-  }
   if (name === "codex_thread_read") return deps.read ? deps.read(binding) : hostOperation(binding, root);
 
   const ledger = readLedger(root);

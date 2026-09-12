@@ -10,10 +10,28 @@ const canonical = value => {
 };
 
 export function loadHostConfig(root, binding) {
-  const config = JSON.parse(readFileSync(join(root, "host-config.json"), "utf8"));
-  if (config.threadId !== binding.threadId || canonical(config.cwd) !== canonical(binding.cwd)) throw Error("Host configuration does not match binding");
-  if (!Number.isFinite(Date.parse(config.expiresAt)) || Date.parse(config.expiresAt) <= Date.now()) throw Error("Host configuration expired");
-  if (typeof config.pipePath !== "string" || !config.pipePath.startsWith("\\\\.\\pipe\\") || !existsSync(config.script)) throw Error("Host adapter unavailable");
+  let config;
+  try {
+    config = JSON.parse(readFileSync(join(root, "host-config.json"), "utf8"));
+    if (!config || typeof config !== "object" || Array.isArray(config)) throw Error("Invalid host configuration");
+  } catch (error) {
+    const issue = error.code === "ENOENT"
+      ? { code: "host_config_missing", message: "Host configuration missing" }
+      : { code: "host_config_unreadable", message: "Cannot read host configuration" };
+    throw Object.assign(Error(issue.message), { diagnostics: [issue] });
+  }
+  const diagnostics = [];
+  if (config.threadId !== binding.threadId) diagnostics.push({ code: "host_task_mismatch", message: "Host task does not match binding" });
+  let cwdMatches = false;
+  try { cwdMatches = typeof config.cwd === "string" && typeof binding.cwd === "string" && canonical(config.cwd) === canonical(binding.cwd); } catch {}
+  if (!cwdMatches) diagnostics.push({ code: "host_cwd_mismatch", message: "Host cwd does not match binding" });
+  if (!Number.isFinite(Date.parse(config.expiresAt)) || Date.parse(config.expiresAt) <= Date.now())
+    diagnostics.push({ code: "host_expired", message: "Host configuration expired or has invalid expiry" });
+  if (typeof config.pipePath !== "string" || !config.pipePath.startsWith("\\\\.\\pipe\\"))
+    diagnostics.push({ code: "host_pipe_invalid", message: "Host pipe configuration invalid" });
+  if (typeof config.script !== "string" || !existsSync(config.script))
+    diagnostics.push({ code: "host_adapter_unavailable", message: "Host adapter unavailable" });
+  if (diagnostics.length) throw Object.assign(Error(diagnostics[0].message), { diagnostics });
   return config;
 }
 
