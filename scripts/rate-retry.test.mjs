@@ -119,6 +119,19 @@ try {
   assert.equal(wideRecovery.sends.length, 2, "Rotation reaches the retry without a fresh-send burst");
   assert(freshHeads.every(mid => q.get(mid).state === "queued"));
 
+  const missingRecovery = setup("missing-recovery");
+  await missingRecovery.run(); missingRecovery.reply(0); await missingRecovery.run();
+  now += RATE_RETRY.delayMs;
+  missingRecovery.tasks.splice(0, 1);
+  missingRecovery.tasks.push({ taskId: "sess_after-missing", workspacePath: "workspace", workspaceKind: "local", displayStatus: "completed" });
+  missingRecovery.snapshots.push({ messages: [] });
+  const afterMissing = q.enqueue({ requestId: "after-missing", taskIds: ["sess_after-missing"], prompt: "new authorized work" }).messages[0].messageId;
+  await missingRecovery.run();
+  assert.equal(q.get(missingRecovery.ids[0]).state, "needs_attention", "A missing retry target releases the global recovery slot without replay");
+  await missingRecovery.run();
+  assert.equal(q.get(afterMissing).state, "acknowledged");
+  assert.equal(missingRecovery.sends.length, 2, "Only the existing fresh message sends after the missing retry is isolated");
+
   const changed = setup("changed");
   await changed.run(); changed.reply(0); await changed.run();
   const following = q.enqueue({ requestId: "after-manual", taskIds: [changed.tasks[0].taskId], prompt: "new authorized message" }).messages[0].messageId;

@@ -35,10 +35,18 @@ export async function dispatch(queue, row, token, connect = withRemote) {
       if (sent.result?.isError || sent.result?.error || sent.result?.accepted === false) throw Error("Desktop rejected prompt");
       queue.transaction(() => { if (queue.get(row.id).state === "dispatching") queue.state(row, "acknowledged"); });
     });
-  } catch {
+  } catch (error) {
     // Only claim() marks the send boundary. Preflight failures stay safely queued.
-    queue.transaction(() => { if (queue.get(row.id).state === "dispatching") queue.state(row, "uncertain"); });
-    queue.heartbeat(token, "remote_or_dispatch_unavailable");
+    const targetMissing = error.code === "ZCODE_TASK_NOT_FOUND";
+    queue.transaction(() => {
+      const current = queue.get(row.id);
+      if (targetMissing && current.state === "retry_wait") {
+        queue.db.prepare("UPDATE messages SET retry_at=NULL WHERE id=?").run(row.id);
+        queue.state(current, "needs_attention");
+        queue.event(current, "retry_stopped", { reason: "target_not_found", businessAccepted: false });
+      } else if (current.state === "dispatching") queue.state(current, "uncertain");
+    });
+    queue.heartbeat(token, targetMissing ? "retry_target_not_found" : "remote_or_dispatch_unavailable");
   }
 }
 

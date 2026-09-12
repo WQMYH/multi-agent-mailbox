@@ -67,6 +67,7 @@ function nativeExecutionFailure(error) {
 const readFailure = (error, fallback = "snapshot_or_cursor_unavailable") =>
   /\bDEVICE_OFFLINE\b/.test(String(error?.code ?? error?.message ?? error))
     ? { error: "device_offline", code: "DEVICE_OFFLINE" } : { error: fallback };
+const taskNotFound = message => Object.assign(Error(message), { code: "ZCODE_TASK_NOT_FOUND" });
 
 export function normalizeTask(t) {
   const rawStatus = t.displayStatus ?? null;
@@ -139,7 +140,7 @@ async function readTaskPage(client, task, args) {
     const snapshot = await client.snapshot(task.taskId, args.messageLimit ?? 100);
     // Inventory used to locate the workspace is not a current completion signal.
     const fresh = (await client.list()).tasks.find(t => t.taskId === task.taskId && t.workspacePath === task.workspacePath);
-    if (!fresh) throw Error("Task disappeared or moved while reading");
+    if (!fresh) throw taskNotFound("Task disappeared or moved while reading");
     return { snapshot, fresh, page: { task: normalizeTask(fresh), ...messagePage(snapshot, fresh, args) } };
   };
   const { page } = await read();
@@ -175,7 +176,7 @@ export async function callRemoteTool(name, args = {}, connect = withRemote) {
         workspaces: list.workspaces.map(w => ({ label: w.label, path: w.workspacePath, kind: w.kind })), tasks: tasks.slice(0, limit) };
     }
     const task = list.tasks.find(t => t.taskId === args.taskId && (!args.workspace || t.workspacePath === args.workspace));
-    if (!task) throw Error("Task not found in the current desktop window/workspace");
+    if (!task) throw taskNotFound("Task not found in the current desktop window/workspace");
     if (["zcode_remote_send", "zcode_remote_set_model", "zcode_remote_cancel"].includes(name) && task.archived) throw Error("Unarchive the task in ZCode before changing it");
     if (name === "zcode_remote_cancel" && task.displayStatus !== "running") return { ...base, task: normalizeTask(task), cancellation: "not_running", requested: false };
     if (name === "zcode_remote_set_model" && task.displayStatus === "running") throw Error("Wait for or stop the running turn before switching its model");
