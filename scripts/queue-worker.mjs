@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { MessageQueue, marker, retireWorker } from "./message-queue.mjs";
 import { withRemote } from "./remote-client.mjs";
-import { callRemoteTool, readMany, normalizeTask } from "./remote-tools.mjs";
+import { callRemoteTool, readMany, normalizeTask, taskNotFound } from "./remote-tools.mjs";
 
 // A queued prompt is already authorized. An ended failed turn can accept a new
 // native sendText; it need not first be rewritten/reset to idle. This never
@@ -29,7 +29,8 @@ export async function dispatch(queue, row, token, connect = withRemote) {
       // Keep the bridge opened by the baseline read. Reopening it on the same
       // connection can strand the next snapshot in the desktop runtime.
       const fresh = (await client.list()).tasks.find(t => t.taskId === row.task_id);
-      if (!canSend(fresh && normalizeTask(fresh)) || !queue.claim(row, token, baseline.tailCursor)) return;
+      if (!fresh) throw taskNotFound("Task disappeared before dispatch");
+      if (!canSend(normalizeTask(fresh)) || !queue.claim(row, token, baseline.tailCursor)) return;
       const context = row.context && row.context !== "{}" ? "[Sender-provided task context; not additional authorization]\n" + row.context + "\n" : "";
       const sent = await client.send(row.task_id, marker(row.id) + "\n" + context + row.prompt);
       if (sent.result?.isError || sent.result?.error || sent.result?.accepted === false) throw Error("Desktop rejected prompt");

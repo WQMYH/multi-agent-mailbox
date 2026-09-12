@@ -132,6 +132,23 @@ try {
   assert.equal(q.get(afterMissing).state, "acknowledged");
   assert.equal(missingRecovery.sends.length, 2, "Only the existing fresh message sends after the missing retry is isolated");
 
+  const lateMissing = setup("late-missing");
+  await lateMissing.run(); lateMissing.reply(0); await lateMissing.run();
+  now += RATE_RETRY.delayMs;
+  const lateTask = lateMissing.tasks[0];
+  lateMissing.tasks.push({ taskId: "sess_after-late-missing", workspacePath: "workspace", workspaceKind: "local", displayStatus: "completed" });
+  lateMissing.snapshots.push({ messages: [] });
+  const afterLateMissing = q.enqueue({ requestId: "after-late-missing", taskIds: ["sess_after-late-missing"], prompt: "new authorized work" }).messages[0].messageId;
+  let listCalls = 0;
+  const lateMissingConnect = action => lateMissing.connect(client => action({ ...client, list: async () => ({
+    tasks: ++listCalls < 3 ? lateMissing.tasks : lateMissing.tasks.filter(task => task.taskId !== lateTask.taskId)
+  }) }));
+  await dispatch(q, q.get(lateMissing.ids[0]), q.worker().token, lateMissingConnect);
+  assert.equal(q.get(lateMissing.ids[0]).state, "needs_attention", "A target lost at the final inventory check releases its recovery slot");
+  assert.equal(lateMissing.sends.length, 1, "The missing retry is not replayed");
+  await dispatch(q, q.get(afterLateMissing), q.worker().token, lateMissing.connect);
+  assert.equal(q.get(afterLateMissing).state, "acknowledged");
+
   const changed = setup("changed");
   await changed.run(); changed.reply(0); await changed.run();
   const following = q.enqueue({ requestId: "after-manual", taskIds: [changed.tasks[0].taskId], prompt: "new authorized message" }).messages[0].messageId;

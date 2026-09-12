@@ -67,7 +67,7 @@ function nativeExecutionFailure(error) {
 const readFailure = (error, fallback = "snapshot_or_cursor_unavailable") =>
   /\bDEVICE_OFFLINE\b/.test(String(error?.code ?? error?.message ?? error))
     ? { error: "device_offline", code: "DEVICE_OFFLINE" } : { error: fallback };
-const taskNotFound = message => Object.assign(Error(message), { code: "ZCODE_TASK_NOT_FOUND" });
+export const taskNotFound = message => Object.assign(Error(message), { code: "ZCODE_TASK_NOT_FOUND" });
 
 export function normalizeTask(t) {
   const rawStatus = t.displayStatus ?? null;
