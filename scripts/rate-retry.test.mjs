@@ -90,10 +90,34 @@ try {
   recoveryOrder.tasks.push({ ...recoveryOrder.tasks[0], taskId: "sess_fresh-recovery", displayStatus: "completed" });
   recoveryOrder.snapshots.push({ messages: [] });
   const freshRecovery = q.enqueue({ requestId: "fresh-recovery", taskIds: ["sess_fresh-recovery"], prompt: "new authorized work" }).messages[0].messageId;
-  q.db.exec("UPDATE worker SET last_task=NULL"); now += RATE_RETRY.delayMs;
+  assert.equal(q.worker().last_task, recoveryOrder.tasks[0].taskId, "Retain the real rotation cursor after rate limiting");
+  now += RATE_RETRY.delayMs;
   await recoveryOrder.run();
   assert.equal(q.get(recoveryOrder.ids[0]).retry_count, 1, "Fresh-send priority must not overtake a retry's selected recovery slot");
   assert.equal(q.get(freshRecovery).state, "queued"); assert.equal(recoveryOrder.sends.length, 2);
+
+  const wideRecovery = setup("wide-recovery");
+  await wideRecovery.run(); wideRecovery.reply(0); await wideRecovery.run();
+  const freshHeads = [];
+  for (let i = 0; i < 9; i++) {
+    const taskId = `sess_fresh-wide-${i}`;
+    wideRecovery.tasks.push({ ...wideRecovery.tasks[0], taskId, displayStatus: "completed" });
+    wideRecovery.snapshots.push({ messages: [] });
+    freshHeads.push(q.enqueue({ requestId: `fresh-wide-${i}`, taskIds: [taskId], prompt: "new authorized work" }).messages[0].messageId);
+  }
+  assert.equal(q.worker().last_task, wideRecovery.tasks[0].taskId);
+  now += RATE_RETRY.delayMs;
+  const recoveryDue = q.worker().rate_until;
+  await dispatch(q, q.get(freshHeads[0]), q.worker().token, wideRecovery.connect);
+  assert.equal(wideRecovery.sends.length, 1, "Direct dispatch cannot take a due retry's recovery slot");
+  assert.equal(q.claim(q.get(freshHeads[0]), q.worker().token, "unused-cursor"), false, "The transactional claim shares the same guard");
+  await wideRecovery.run();
+  assert.equal(wideRecovery.sends.length, 1, "A due retry outside the first eight heads retains the slot");
+  assert.equal(q.worker().rate_until, recoveryDue, "Fresh heads cannot extend the expired cooldown");
+  await wideRecovery.run();
+  assert.equal(q.get(wideRecovery.ids[0]).retry_count, 1);
+  assert.equal(wideRecovery.sends.length, 2, "Rotation reaches the retry without a fresh-send burst");
+  assert(freshHeads.every(mid => q.get(mid).state === "queued"));
 
   const changed = setup("changed");
   await changed.run(); changed.reply(0); await changed.run();

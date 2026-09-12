@@ -272,8 +272,13 @@ export class MessageQueue {
   }
   remoteDone(token) { this.transaction(() => this.db.prepare("DELETE FROM remote_requests WHERE token=?").run(token)); }
   ready(row, now = Date.now()) {
-    return ["queued", "retry_wait"].includes(row.state) && now >= this.worker().rate_until &&
-      (row.state !== "retry_wait" || now >= row.retry_at);
+    const rateUntil = this.worker().rate_until;
+    if (!["queued", "retry_wait"].includes(row.state) || now < rateUntil ||
+        row.state === "retry_wait" && now < row.retry_at) return false;
+    // Reserve recovery capacity for due retries, including heads outside this
+    // tick's batch. claim() repeats this guard inside the ownership transaction.
+    return row.state !== "queued" || rateUntil === 0 || !this.heads().some(head =>
+      head.state === "retry_wait" && now >= head.retry_at && head.retry_count < RATE_RETRY.maxRetries);
   }
   claim(row, token, cursor) {
     return this.transaction(() => {
