@@ -163,7 +163,7 @@ export class MessageQueue {
       source: { agent: JSON.parse(row.context).sourceAgent ?? "unspecified", declaredBySender: true },
       destination: { agent: "zcode", taskId: row.task_id }, createdAt: row.created_at,
       prompt: row.pruned_at ? null : row.prompt, context: row.pruned_at ? null : JSON.parse(row.context),
-      state: row.state, nativeStatus: row.native_status, nativeMessageId: row.native_id, turnIndex: row.turn_index,
+      state: row.state, ...this.blocking(row.id), nativeStatus: row.native_status, nativeMessageId: row.native_id, turnIndex: row.turn_index,
       retry: { count: row.retry_count, maxRetries: RATE_RETRY.maxRetries, nextAttemptAt: row.retry_at,
         remainingSeconds: row.state === "retry_wait" ? Math.max(0, Math.ceil((Math.max(row.retry_at, this.worker().rate_until) - Date.now()) / 1000)) : null },
       ...(failure ? { nativeExecutionFailure: JSON.parse(failure.payload) } : {}),
@@ -189,6 +189,13 @@ export class MessageQueue {
       .run(row.id, row.task_id, row.team_id, kind, JSON.stringify(payload), Date.now());
   }
   get(id) { return this.db.prepare("SELECT * FROM messages WHERE id=?").get(id); }
+  blocking(id) {
+    return this.db.prepare(`SELECT 'same_task_fifo' AS blockedReason, prior.id AS blockedByMessageId,
+      prior.state AS blockedByState FROM messages current JOIN messages prior
+      ON prior.task_id=current.task_id AND prior.seq<current.seq
+      WHERE current.id=? AND current.state IN ('queued','retry_wait') AND prior.state NOT IN (${terminal})
+      ORDER BY prior.seq LIMIT 1`).get(id) ?? { blockedReason: null, blockedByMessageId: null, blockedByState: null };
+  }
   state(row, state) {
     this.db.prepare("UPDATE messages SET state=? WHERE id=?").run(state, row.id);
     this.event(row, "delivery", { state });
@@ -203,7 +210,7 @@ export class MessageQueue {
       const existing = this.db.prepare("SELECT * FROM messages WHERE request_id=? ORDER BY task_id").all(requestId);
       if (existing.length) {
         if (existing.length !== taskIds.length || existing.some(r => !taskIds.includes(r.task_id) || r.request_hash !== hash)) throw Error("requestId already exists with different content or recipients");
-        return { deduplicated: true, messages: existing.map(r => ({ messageId: r.id, taskId: r.task_id, state: r.state })) };
+        return { deduplicated: true, messages: existing.map(r => ({ messageId: r.id, taskId: r.task_id, state: r.state, ...this.blocking(r.id) })) };
       }
       if (this.db.prepare(`SELECT count(*) AS n FROM messages WHERE state NOT IN (${terminal})`).get().n + taskIds.length > LIMITS.pending) throw Error("Queue full: resolve pending entries first (limit 100)");
       if (this.db.prepare("SELECT count(*) AS n FROM messages WHERE pruned_at IS NULL").get().n + taskIds.length > LIMITS.records || this.usedBytes() + taskIds.length * (bytes(prompt) + bytes(context) + 16000) > LIMITS.workingBytes) throw Error("Storage capacity reached; confirm received terminal results first. Nothing sent.");
@@ -211,7 +218,7 @@ export class MessageQueue {
         const id = randomUUID();
         this.db.prepare("INSERT INTO messages(id,request_id,task_id,team_id,prompt,context,request_hash,created_at) VALUES(?,?,?,?,?,?,?,?)").run(id, requestId, taskId, teamId, prompt, JSON.stringify(context), hash, Date.now());
         this.event(this.get(id), "delivery", { state: "queued" });
-        return { messageId: id, taskId, state: "queued" };
+        return { messageId: id, taskId, state: "queued", ...this.blocking(id) };
       });
       return { deduplicated: false, messages };
     });
@@ -342,12 +349,21 @@ export class MessageQueue {
       }
       if (competing || page.task.archived || ["cancelled", "interrupted"].includes(page.task.status) ||
           !page.hasMore && page.task.status === "failed") this.state(row, "needs_attention");
-      else if (page.completionConfirmed === true && !page.hasMore && nativeId && reply && page.task.status === "completed" &&
+      else if (page.completionConfirmed === true && !page.hasMore && nativeId && page.task.status === "completed" &&
         !page.pendingPermissions && !page.pendingQuestions && !page.pendingCommands) {
-        this.state(row, "completed");
-        const probe = this.worker().rate_probe;
-        if (probe && this.get(probe)?.state === "completed" && !this.db.prepare("SELECT 1 FROM messages WHERE state='retry_wait' OR (retry_count>0 AND state IN ('dispatching','acknowledged','uncertain')) LIMIT 1").get())
-          this.db.exec("UPDATE worker SET rate_until=0,rate_probe=NULL WHERE id=1");
+        if (reply) {
+          this.state(row, "completed");
+          const probe = this.worker().rate_probe;
+          if (probe && this.get(probe)?.state === "completed" && !this.db.prepare("SELECT 1 FROM messages WHERE state='retry_wait' OR (retry_count>0 AND state IN ('dispatching','acknowledged','uncertain')) LIMIT 1").get())
+            this.db.exec("UPDATE worker SET rate_until=0,rate_probe=NULL WHERE id=1");
+        } else if (Number.isInteger(turn) && page.tailMessage?.role === "assistant" &&
+            page.tailMessage.turnIndex === turn && page.tailMessage.totalCharacters === 0) {
+          // The cursor may already be past this empty tail. Native completion is
+          // not a successful reply and must not silently release old followers.
+          this.state(row, "needs_attention");
+          this.event(row, "native_execution_failed", { stage: "native_execution", source: "zcode_native",
+            reason: "empty_response", userMessageObserved: true, assistantTextReturned: false });
+        }
       }
     });
   }
@@ -402,7 +418,8 @@ export class MessageQueue {
     }
     const messages = this.db.prepare(`SELECT id AS messageId,task_id AS taskId,team_id AS teamId,state,native_status AS nativeStatus,
       consumed_at AS consumedAt,pruned_at AS bodyPrunedAt
-      FROM messages WHERE (? IS NULL OR task_id IN (SELECT value FROM json_each(?))) AND (? IS NULL OR team_id=?) ORDER BY state IN (${terminal}),seq DESC LIMIT 100`).all(selected, selected, teamId, teamId);
+      FROM messages WHERE (? IS NULL OR task_id IN (SELECT value FROM json_each(?))) AND (? IS NULL OR team_id=?) ORDER BY state IN (${terminal}),seq DESC LIMIT 100`).all(selected, selected, teamId, teamId)
+      .map(row => ({ ...row, ...this.blocking(row.messageId) }));
     const w = this.worker(), retention = this.db.prepare("SELECT * FROM retention WHERE id=1").get();
     return { events, envelopes, cursor: events.at(-1)?.cursor ?? after, hasMore: rows.length > events.length, messages,
       historyGap: after > 0 && after < retention.through_event,
@@ -509,7 +526,14 @@ export async function callQueueTool(name, args = {}, { launch } = {}) {
     }
     if (name === "zcode_queue_read") return queue.read(args);
     if (name === "zcode_queue_resolve") {
-      if (args.decision !== "received") return queue.resolve(args);
+      if (args.decision !== "received") {
+        const receipt = queue.resolve(args);
+        if (queue.worker().desired && !queue.worker().paused && queue.heads().some(row => row.state !== "needs_attention")) {
+          try { receipt.worker = await startWorker(queue, { launch }); }
+          catch { receipt.worker = queue.read({ limit: 1 }).worker; receipt.startupError = "Queue item resolved; worker did not start. Resume explicitly; do not resend."; }
+        }
+        return receipt;
+      }
       const receipt = queue.consume(args.messageId, args.throughEvent, args.consumerId);
       return { ...receipt, prunedRecords: queue.maintain() };
     }

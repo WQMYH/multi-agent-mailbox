@@ -85,6 +85,16 @@ try {
   assert.equal(q.worker().rate_until, 0, "Successful last recovery restores normal scheduling");
   assert.equal(q.get(many.ids[otherIndex]).retry_count, 1);
 
+  const recoveryOrder = setup("recovery-order");
+  await recoveryOrder.run(); recoveryOrder.reply(0); await recoveryOrder.run();
+  recoveryOrder.tasks.push({ ...recoveryOrder.tasks[0], taskId: "sess_fresh-recovery", displayStatus: "completed" });
+  recoveryOrder.snapshots.push({ messages: [] });
+  const freshRecovery = q.enqueue({ requestId: "fresh-recovery", taskIds: ["sess_fresh-recovery"], prompt: "new authorized work" }).messages[0].messageId;
+  q.db.exec("UPDATE worker SET last_task=NULL"); now += RATE_RETRY.delayMs;
+  await recoveryOrder.run();
+  assert.equal(q.get(recoveryOrder.ids[0]).retry_count, 1, "Fresh-send priority must not overtake a retry's selected recovery slot");
+  assert.equal(q.get(freshRecovery).state, "queued"); assert.equal(recoveryOrder.sends.length, 2);
+
   const changed = setup("changed");
   await changed.run(); changed.reply(0); await changed.run();
   const following = q.enqueue({ requestId: "after-manual", taskIds: [changed.tasks[0].taskId], prompt: "new authorized message" }).messages[0].messageId;

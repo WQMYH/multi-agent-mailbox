@@ -69,6 +69,7 @@ export function messagePage(snapshot, task, { afterCursor, maxChars = 24000, req
       status: replies.some(m => contentOf(m).length > 0) ? "assistant_reply_observed" : user ? "user_message_observed" : "unconfirmed" };
   }
   return { ...pending, history: snapshot.history ?? null, snapshotMessageCount: rows.length,
+    tailMessage: tail ? { id: tail.id, role: tail.role, turnIndex: tail.turnIndex ?? null, totalCharacters: contentOf(tail).length } : null,
     messageCount: messages.length, outputTruncated: hasMore, hasMore, historyGap,
     ...(historyGap ? { recovery: "Anchor is outside the current snapshot. Increase messageLimit (up to 500); if still missing, explicitly start a fresh read. History continuity is not confirmed." } : {}),
     cursor: historyGap ? afterCursor : encodeCursor(cursor), tailCursor,

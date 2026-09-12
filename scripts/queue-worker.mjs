@@ -47,6 +47,13 @@ export async function tick(queue, token, connect = withRemote) {
   queue.heartbeat(token);
   const heads = queue.heads(), last = heads.findIndex(r => r.task_id === queue.worker().last_task);
   const selected = [...heads.slice(last + 1), ...heads.slice(0, last + 1)].slice(0, 8);
+  const prioritizeQueued = queue.worker().rate_until === 0;
+  // Fresh FIFO heads must not wait for unrelated long reply snapshots. Every
+  // dispatch still checks current native status, ownership and shared cooldown.
+  for (const row of selected) {
+    if (!queue.running(token)) return;
+    if (prioritizeQueued && row.state === "queued") await dispatch(queue, row, token, connect);
+  }
   const observing = selected.filter(r => ["acknowledged", "uncertain", "retry_wait"].includes(r.state) && r.cursor);
   if (observing.length) {
     try {
@@ -58,7 +65,8 @@ export async function tick(queue, token, connect = withRemote) {
   }
   for (const row of selected) {
     if (!queue.running(token)) break;
-    if (["queued", "retry_wait"].includes(row.state)) await dispatch(queue, row, token, connect);
+    // Retries must reconcile late replies and external input before any resend.
+    if (row.state === "retry_wait" || !prioritizeQueued && row.state === "queued") await dispatch(queue, row, token, connect);
     queue.db.prepare("UPDATE worker SET last_task=?,heartbeat=? WHERE id=1 AND token=?").run(row.task_id, Date.now(), token);
   }
 }
