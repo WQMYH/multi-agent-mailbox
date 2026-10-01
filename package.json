@@ -1,6 +1,6 @@
 {
-  "name": "zcode-ops",
-  "version": "0.1.6",
+  "name": "multi-agent-mailbox",
+  "version": "0.2.0",
   "private": true,
   "license": "Apache-2.0",
   "type": "module",
@@ -9,5 +9,12 @@
     "mcacp": "0.1.3",
     "zcode-acp-server": "0.21.0"
   },
-  "scripts": { "smoke": "node scripts/smoke.mjs" }
+  "scripts": {
+    "build": "node modules/agent-zcode/build.mjs",
+    "test": "node scripts/test-all.mjs",
+    "smoke": "node scripts/smoke.mjs"
+  },
+  "description": "A local multi-agent mailbox with shared CLI/MCP access and optional native adapters.",
+  "repository": { "type": "git", "url": "https://github.com/WQMYH/multi-agent-mailbox.git" },
+  "bugs": { "url": "https://github.com/WQMYH/multi-agent-mailbox/issues" }
 }

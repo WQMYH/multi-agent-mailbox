@@ -1,0 +1,7 @@
+{
+  "schemaVersion": 1,
+  "token": "replace-with-at-least-32-random-characters",
+  "stateDir": "C:\\Users\\YOU\\.codex-agent-core\\qoder-ide-instances",
+  "allowedCommands": ["px.runTiger", "aicoding.chat.history", "workbench.action.aichat.sendText"],
+  "timeoutMs": 10000
+}

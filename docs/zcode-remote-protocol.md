@@ -13,9 +13,13 @@ Verified against the installed ZCode desktop bundle and a live Remote Control se
 - Older tasks can be slow enough for their direct `workspace-bridge-open` to be superseded. Because the bridge is workspace-scoped, ZCode Ops may attach another live task in the same workspace and still address the requested task id; it never substitutes the target task itself.
 - `zcode-task/stopGeneration({ taskId, workspacePath, workspaceIdentity? })` sends a native V4 conversation `stop` command. It is task-scoped, not conditional on an expected run ID. ZCode Ops rechecks native running status immediately before this call; ACK is reported only as `cancel_requested`. Fake-transport and tool regressions cover targeting, ended turns and uncertain delivery; no live business task was stopped for validation.
 - `zcode_remote_wait` polls native workspace-list status with a bounded 0–30 second wait window plus request latency. The cursor includes task/workspace/native status/archive state, excluding timestamps and text. Connections are released between polls. Live verification returned `running` with `timedOut: true`, without inferring interruption; deterministic tests cover transitions, attention, missing tasks and transport failure.
-- The remote adapter allowlists only `getTaskSnapshot`, `getTaskConfigOptions`, `resumeTask`, `sendPrompt`, `setConfigOption`, and `stopGeneration`; task creation and arbitrary service dispatch remain blocked.
+- The remote adapter allowlists `createTask`, `getTaskSnapshot`, `getTaskConfigOptions`, `resumeTask`, `sendPrompt`, `setConfigOption`, and `stopGeneration`; arbitrary service dispatch remains blocked. `createTask` is available only inside the durable first-message workspace flow, with fixed `deferPersistenceUntilFirstPrompt: true` and a validated native `sess_*` result. No empty-task public tool exists.
 - Sharing links are stored without format probing. URL parsing and required authentication fields are checked only when a remote operation is attempted. A connection failure asks for a new link; no automatic send retry occurs.
 - Codex startup performs no ZCode operation and shows no link prompt. OpenAI's optional plugin components currently run through the ChatGPT MCP Apps UI path, so this local Codex plugin uses the native conversation input instead of a separate imitation window: <https://developers.openai.com/plugins/build/chatgpt-ui>.
+
+## First-message task creation (2026-09-26, source/offline only)
+
+Installed ZCode 3.14.3 bundle inspection found `zcode-task/createTask` reachable through a workspace-only bridge. The Phase 2B wrapper sends only `workspacePath`, optional `workspaceIdentity`, and `deferPersistenceUntilFirstPrompt: true`; it requires a real `sess_*` ACK. The public `zcode_send` accepts either existing `taskIds` or one connected `workspace`. The latter persists a stable workspace target and create intent in the existing SQLite queue, binds the native ID before `sendPrompt`, and keeps the three persisted send IDs and message marker for reconciliation. A create call with unknown outcome becomes `create_unknown` and is never retried; an explicit RPC rejection becomes `create_failed`. A bound task whose first send has not started may resume; an uncertain send is observed read-only and never replayed. Fake bridge and queue tests verify these boundaries. No live workspace creation, provider call, install, or business acceptance is claimed here; older ZCode versions remain unverified.
 
 ## Failed-turn continuation (2026-09-10)
 
@@ -165,3 +169,24 @@ no queued follow-up was dispatched during verification. This validates the repor
 head's recovery, not every native task's health or a maximum model concurrency.
 The deterministic regression reproduces shared-connection poisoning and verifies
 healthy completion, same-task follow-up admission, and no replay of old requests.
+
+## Large-reply ACK identity (2026-09-14)
+
+A single task also stalled after its first full snapshot: 47 messages, 3,191,323
+encoded bytes in five fragments arrived successfully, but the completion-confirmation
+snapshot on that connection timed out. Two tail-only reads succeeded with the same
+Sharing Link and saved cursor. Reconnecting and repeating the full read did not help.
+
+The installed desktop's `sameIdentity` in `out/main/chunk-WR3FEWGO.js` compares
+`bridgeSessionId`, `bridgeGeneration`, and `recoveryId` exactly. Its
+`AcknowledgedRelayProtocol` in `out/main/chunk-NHZHAM44.js` ignores mismatched ACKs
+and retains the unacknowledged bytes, eventually saturating the bridge. ZCode Ops
+omitted `bridgeGeneration` from `rpc-frame-ack`; its outgoing data frames already
+included it. Small responses had hidden the missing ACK because they did not fill
+the buffer immediately.
+
+Echoing the accepted frame's generation in the ACK restored both full snapshots
+on the same connection. The live read returned the remaining 1,073 characters
+from the unchanged cursor with `completionConfirmed: true` and no history gap.
+The regression checks the large-reply ACK identity and gates subsequent fake RPCs
+on a matching ACK. Snapshot limits and completion checks remain unchanged.

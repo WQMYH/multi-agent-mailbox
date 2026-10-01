@@ -1,0 +1,8 @@
+{
+  "name": "qoder-codex-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=24" },
+  "scripts": { "test": "node scripts/self-test.mjs && node scripts/attribution-test.mjs && node scripts/message-test.mjs && node scripts/native-turn-test.mjs" }
+}

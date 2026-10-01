@@ -1,0 +1,24 @@
+{
+  "name": "qoder-ide-command-bridge",
+  "displayName": "Qoder IDE Command Bridge",
+  "description": "Authenticated loopback access to a small allowlist of Qoder IDE commands.",
+  "version": "0.2.0",
+  "publisher": "wqmyh",
+  "private": true,
+  "engines": { "vscode": "^1.106.0" },
+  "categories": ["Other"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./extension.cjs",
+  "contributes": {
+    "configuration": {
+      "title": "Qoder IDE Command Bridge",
+      "properties": {
+        "qoderIdeBridge.configPath": {
+          "type": "string",
+          "default": "",
+          "description": "Absolute shared bridge config path. Empty uses QODER_IDE_BRIDGE_CONFIG or ~/.codex-agent-core/agent-qoder-ide.json."
+        }
+      }
+    }
+  }
+}

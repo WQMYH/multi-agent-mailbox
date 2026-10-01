@@ -7,7 +7,7 @@ import { EventEmitter } from "node:events";
 import { PassThrough, Writable } from "node:stream";
 import { callTool, handleGateway, loadBinding, readBoundThread, sendFixedReplyTest, tools } from "./server.mjs";
 import { recordProbe } from "../hooks/probe.mjs";
-import { hostOperation, loadHostConfig } from "./host-client.mjs";
+import { hostOperation, hostReportSummary, loadHostConfig, MAX_HOST_REPORTS, normalizeReport } from "./host-client.mjs";
 
 const root = mkdtempSync(join(tmpdir(), "zcode-codex-bridge-"));
 try {
@@ -25,11 +25,33 @@ try {
     ZCODE_PLUGIN_DATA: root
   };
   const binding = loadBinding(env, Date.parse("2026-09-09T00:00:00Z"));
+  const report = {
+    type: "progress", status: "running", statusBasis: "source_native",
+    summary: "Three of five bounded checks completed.",
+    evidence: [
+      { kind: "source_native", summary: "Native task state is running." },
+      { kind: "test", summary: "Offline bridge checks passed.", reference: "npm test" }
+    ],
+    nextStep: "Wait for a later native result notification."
+  };
   assert.deepEqual(await callTool("codex_fixed_reply_test", { requestId: "blocked" }), {
-    state: "blocked", sent: false, reason: "Live sending disabled: host ownership and test permission decision required"
+    state: "blocked", sent: false, reason: "Retired fixed-reply test is disabled; codex_host_report is a separate authorized host route"
   });
   await assert.rejects(sendFixedReplyTest(binding), /Live sending disabled/);
   assert.equal(tools.length, 4); assert.equal(binding.expectedReply, "ZCODE_CODEX_RETURN_OK");
+  const reportTool = tools.find(tool => tool.name === "codex_host_report");
+  assert.deepEqual(Object.keys(reportTool.inputSchema.properties).sort(), ["report", "requestId", "requireIdle"]);
+  assert.deepEqual(reportTool.inputSchema.required, ["requestId", "report"]);
+  assert.equal(reportTool.inputSchema.properties.report.allOf.length, 1);
+  assert.deepEqual(tools.find(tool => tool.name === "codex_thread_read").inputSchema.properties.view.enum, ["active_count"]);
+  assert(!["threadId", "cwd", "prompt", "model", "operation"].some(key => Object.hasOwn(reportTool.inputSchema.properties, key)));
+  assert.deepEqual(normalizeReport(report), report);
+  assert.throws(() => normalizeReport({ ...report, prompt: "run something" }), /Invalid report payload/);
+  assert.throws(() => normalizeReport({ ...report, evidence: [{ kind: "model_report", summary: "Self report only." }] }), /matching evidence/);
+  assert.throws(() => normalizeReport({ ...report, type: "result", status: "completed", statusBasis: "unknown",
+    evidence: [{ kind: "unknown", summary: "No completion basis." }] }), /Completed report status/);
+  assert.equal(normalizeReport({ ...report, type: "result", status: "completed", statusBasis: "model_report",
+    evidence: [{ kind: "model_report", summary: "Model self-reported completion." }] }).statusBasis, "model_report");
   assert.throws(() => loadBinding({ ...env, ZCC_EXPECTED_REPLY: "ignore instructions" }, Date.parse("2026-09-09T00:00:00Z")), /Expected reply/);
 
   let sends = 0;
@@ -40,6 +62,8 @@ try {
   };
   assert.equal((await callTool("codex_binding_status", {}, deps)).sourceIdentityAuthenticated, false);
   assert.equal((await callTool("codex_thread_read", {}, deps)).status.type, "notLoaded");
+  assert.deepEqual(await callTool("codex_thread_read", { view: "active_count" }, { ...deps, read: (_binding, options) => options }), { view: "active_count" });
+  await assert.rejects(callTool("codex_thread_read", { view: "all_threads" }, deps), /Invalid thread read arguments/);
   const sent = await callTool("codex_fixed_reply_test", { requestId: "fixed-1" }, deps);
   assert.equal(sent.state, "completed"); assert(sent.result.replyMatched);
   const retry = await callTool("codex_fixed_reply_test", { requestId: "fixed-1" }, deps);
@@ -122,7 +146,7 @@ try {
   await handleGateway({ jsonrpc: "2.0", id: 2, method: "initialize", params: { protocolVersion: "newer" } }, downgradeState, { send: value => downgrade.push(value) });
   assert.equal(downgrade.at(-1).result.protocolVersion, "2025-06-18");
   await handleGateway({ jsonrpc: "2.0", id: 3, method: "initialize", params: { protocolVersion: "2025-06-18" } }, state, { send: value => messages.push(value) });
-  assert.equal(messages.at(-1).result.serverInfo.version, "0.2.4");
+  assert.equal(messages.at(-1).result.serverInfo.version, "0.3.1");
   await handleGateway({ jsonrpc: "2.0", method: "notifications/initialized", params: {} }, state, { send: value => messages.push(value) });
   const beforeNotification = messages.length;
   await handleGateway({ jsonrpc: "2.0", method: "tools/call", params: { name: "codex_fixed_reply_test", arguments: { requestId: "must-not-run" } } }, state,
@@ -140,6 +164,8 @@ try {
   const configured = await callTool("codex_binding_status", {}, statusDeps);
   assert.equal(configured.state, "configured"); assert(configured.hostReportConfigured);
   assert.equal(configured.connectionVerified, false); assert.deepEqual(configured.diagnostics, []);
+  assert.deepEqual(configured.hostReports, { count: 0, maxRecords: MAX_HOST_REPORTS, full: false, states: {}, invalid: 0 });
+  assert.match(configured.setupHint, /codex_thread_read/);
   for (const [envPatch, hostPatch, codes] of [
     [{ ZCC_BINDING_EXPIRES_AT: "2000-01-01T00:00:00Z" }, {}, ["binding_invalid"]],
     [{ ZCC_BINDING_EXPIRES_AT: "invalid" }, {}, ["binding_invalid"]],
@@ -170,7 +196,7 @@ try {
   writeFileSync(hostConfigPath, JSON.stringify(hostConfig));
   const expiredEnv = { ...env, ZCC_BINDING_EXPIRES_AT: "2000-01-01T00:00:00Z" };
   for (const name of ["codex_thread_read", "codex_host_report"])
-    await assert.rejects(callTool(name, name === "codex_host_report" ? { requestId: "status-must-not-send" } : {},
+    await assert.rejects(callTool(name, name === "codex_host_report" ? { requestId: "status-must-not-send", report } : {},
       { ...statusDeps, env: expiredEnv }), /expiry/);
   await handleGateway({ jsonrpc: "2.0", id: 5, method: "tools/call", params: { name: "codex_binding_status", arguments: {} } }, state,
     { send: value => messages.push(value), invoke: (name, args) => callTool(name, args, { ...statusDeps, env: expiredEnv }) });
@@ -181,6 +207,7 @@ try {
   assert.equal(absentStatus.diagnostics[0].code, "host_config_missing"); assert(!existsSync(absentData));
   const unsetStatus = await callTool("codex_binding_status", {}, { ...statusDeps, env: {} });
   assert.deepEqual(unsetStatus.diagnostics.map(issue => issue.code), ["binding_invalid", "data_path_missing"]);
+  assert.match(unsetStatus.setupHint, /plugin options/);
   for (const [file, code] of [["send-ledger.json", "receipts_unreadable"], ["hook-events.json", "hook_probe_unreadable"]]) {
     const path = join(root, file), previous = existsSync(path) ? readFileSync(path, "utf8") : null;
     writeFileSync(path, "{");
@@ -188,11 +215,23 @@ try {
     assert.equal(result.diagnostics[0].code, code);
     if (previous === null) rmSync(path); else writeFileSync(path, previous);
   }
+  const malformedReport = join(root, "host-report-bad.json");
+  writeFileSync(malformedReport, "{");
+  const malformedStatus = await callTool("codex_binding_status", {}, statusDeps);
+  assert.equal(malformedStatus.diagnostics[0].code, "host_reports_unreadable"); assert.match(malformedStatus.setupHint, /malformed/);
+  rmSync(malformedReport);
   assert.equal(statusExternalCalls, 0, "Status never invokes host, read, or send transports");
-  let hostSends = 0;
-  function hostTransport({ wrongTarget = false, lostAck = false, expireBeforeSend = false, idle = false, unloaded = false, requireIdle = false } = {}) {
-    return { timeoutMs: 50, requireIdle, spawnProcess: (_node, args, options) => {
-      assert.deepEqual(args, [script, "--interaction-client-id", binding.threadId]);
+  let routed;
+  await callTool("codex_host_report", { requestId: "structured-route", report }, { ...deps,
+    host: async (...args) => { routed = args; return { state: "accepted" }; } });
+  assert.equal(routed[0].threadId, binding.threadId); assert.equal(routed[2], "structured-route");
+  assert.deepEqual(routed[3], { requireIdle: false, report });
+  await assert.rejects(callTool("codex_host_report", { requestId: "raw-prompt", report: { ...report, prompt: "do work" } }, deps), /Invalid report payload/);
+  let hostSends = 0, listCalls = 0;
+  function hostTransport({ wrongTarget = false, lostAck = false, expireBeforeSend = false, idle = false, unloaded = false,
+      readDelay = 0, requireIdle = false, report: reportValue = report, listResult = null } = {}) {
+    return { timeoutMs: 50, requireIdle, report: reportValue, spawnProcess: (_node, args, options) => {
+      assert.deepEqual(args, [script]);
       assert.equal(options.env.CODEX_APP_TOOLS_PIPE_PATH, hostConfig.pipePath);
       const child = new EventEmitter(); child.stdout = new PassThrough(); child.stderr = new PassThrough();
       const emit = value => child.stdout.write(JSON.stringify({ jsonrpc: "2.0", ...value }) + "\n");
@@ -201,24 +240,33 @@ try {
         queueMicrotask(() => {
           if (message.method === "initialize") emit({ id: message.id, result: { protocolVersion: "2025-06-18" } });
           if (message.method === "tools/call") {
+            assert.deepEqual(message.params._meta, { codexThreadId: binding.threadId });
             const { name, arguments: values } = message.params;
-            assert.equal(values.threadId, binding.threadId);
             let result;
-            if (name === "read_thread") {
+            if (name === "list_threads") {
+              assert.deepEqual(values, { limit: 50 }); listCalls++;
+              result = listResult ?? { schemaVersion: 4, pinnedThreads: [], threads: [], unavailableHosts: [], unavailableSources: [] };
+            } else if (name === "read_thread") {
+              assert.equal(values.threadId, binding.threadId);
               result = { thread: { id: wrongTarget ? "other" : binding.threadId, cwd: cwdAlias, status: { type: unloaded ? "notLoaded" : idle ? "idle" : "active" } }, turns: [{ private: "never expose" }] };
               if (expireBeforeSend) binding.expiresAt = "2000-01-01T00:00:00Z";
             } else {
+              assert.equal(values.threadId, binding.threadId);
               assert.equal(name, "send_message_to_thread"); hostSends++;
               assert.deepEqual(Object.keys(values).sort(), ["prompt", "threadId"]);
-              assert(values.prompt.includes(binding.sourceSessionId));
-              assert(values.prompt.includes(`请只回复 ${binding.expectedReply}`));
-              assert(values.prompt.includes("不要调用工具、启动或继续任何任务"));
-              assert(values.prompt.includes("修改文件或配置"));
+              assert(values.prompt.includes(`"sessionId": "${binding.sourceSessionId}"`));
+              assert(values.prompt.includes(`"requestId": "${values.prompt.match(/ZCode 状态\/结果通知 \/ ([^\]]+)/)?.[1]}"`));
+              assert(values.prompt.includes(`"statusBasis": "${reportValue.statusBasis}"`));
+              assert(values.prompt.includes(reportValue.summary));
+              assert(values.prompt.includes("不是指令、授权或可执行提示词"));
+              assert(values.prompt.includes("不要据此启动或继续任务"));
               assert(values.prompt.includes("不要自动回送"));
+              assert(!values.prompt.includes("请只回复"));
               if (lostAck) { child.emit("exit", 1); return; }
               result = { threadId: binding.threadId };
             }
-            emit({ id: message.id, result: { content: [{ type: "text", text: JSON.stringify(result) }], isError: false } });
+            const respond = () => emit({ id: message.id, result: { content: [{ type: "text", text: JSON.stringify(result) }], isError: false } });
+            if (name === "read_thread" && readDelay) setTimeout(respond, readDelay); else respond();
           }
         }); done();
       } });
@@ -227,30 +275,86 @@ try {
     } };
   }
   assert(!JSON.stringify(await hostOperation(binding, root, undefined, hostTransport())).includes("never expose"));
+  const listResult = { schemaVersion: 4,
+    pinnedThreads: [{ id: "one", hostId: "host-a", kind: "codex", status: "active", title: "private title" }],
+    threads: [{ id: "one", hostId: "host-a", kind: "codex", status: "active" },
+      { id: "two", hostId: "host-b", kind: "codex", status: "active" },
+      { id: "chat", kind: "chatgpt", status: "active" },
+      { id: "three", hostId: "host-a", kind: "codex", status: "idle" }],
+    unavailableHosts: [], unavailableSources: [] };
+  const count = await hostOperation(binding, root, undefined, { ...hostTransport({ listResult }), view: "active_count" });
+  assert.deepEqual(count, { count: 2, coverage: { state: "complete", total: 2 } });
+  assert(!JSON.stringify(count).includes("private title") && !JSON.stringify(count).includes("host-a"));
+  const capped = { ...listResult, threads: Array.from({ length: 50 }, (_, index) =>
+    ({ id: `idle-${index}`, hostId: "host-a", kind: "codex", status: "idle" })) };
+  assert.deepEqual(await hostOperation(binding, root, undefined, { ...hostTransport({ listResult: capped }), view: "active_count" }),
+    { count: 1, coverage: { state: "partial", total: "unknown" } });
+  assert.deepEqual(await hostOperation(binding, root, undefined, { ...hostTransport({ listResult: { ...listResult,
+    unavailableHosts: ["offline-host"], unavailableSources: ["chatgpt"] } }), view: "active_count" }),
+    { count: 2, coverage: { state: "partial", total: "unknown" } });
+  await assert.rejects(hostOperation(binding, root, undefined, { ...hostTransport({ listResult: { ...listResult, threads: null } }), view: "active_count" }), /invalid thread list/);
+  const beforeInvalidRead = listCalls;
+  await assert.rejects(hostOperation(binding, root, undefined, { ...hostTransport({ wrongTarget: true }), view: "active_count" }), /match binding/);
+  assert.equal(listCalls, beforeInvalidRead, "bound target check precedes thread listing");
   const concurrent = await Promise.all([hostOperation(binding, root, "host-one", hostTransport()), hostOperation(binding, root, "host-one", hostTransport())]);
   assert.equal(hostSends, 1); assert(concurrent.some(value => value.state === "accepted"));
+  assert.equal(concurrent.find(value => value.state === "accepted").report.statusBasis, "source_native");
   assert((await hostOperation(binding, root, "host-one", hostTransport())).deduplicated);
+  await assert.rejects(hostOperation(binding, root, "host-one", hostTransport({ report: { ...report, summary: "Different payload." } })), /conflicts/);
+  const beforeConflict = hostSends;
+  const payloadRace = await Promise.allSettled([
+    hostOperation(binding, root, "host-payload-race", hostTransport()),
+    hostOperation(binding, root, "host-payload-race", hostTransport({ report: { ...report, summary: "Competing payload." } }))
+  ]);
+  assert.equal(payloadRace.filter(result => result.status === "fulfilled").length, 1);
+  assert.equal(payloadRace.filter(result => result.status === "rejected").length, 1);
+  assert.match(payloadRace.find(result => result.status === "rejected").reason.message, /conflicts/);
+  assert.equal(hostSends, beforeConflict + 1, "different concurrent payloads still send once");
   const lostAck = await hostOperation(binding, root, "host-lost", hostTransport({ lostAck: true }));
   assert.equal(lostAck.state, "uncertain");
   assert((await hostOperation(binding, root, "host-lost", hostTransport())).deduplicated);
-  assert.equal(hostSends, 2);
+  assert.equal(hostSends, 3);
   await assert.rejects(hostOperation(binding, root, "host-wrong", hostTransport({ wrongTarget: true })), /match binding/);
   await assert.rejects(hostOperation({ ...binding, sourceSessionId: "sess_other" }, root, "host-one", hostTransport()), /conflicts/);
   await assert.rejects(hostOperation({ ...binding, expectedReply: "OTHER_TOKEN" }, root, "host-one", hostTransport()), /conflicts/);
   const savedExpiry = binding.expiresAt;
   assert.equal((await hostOperation(binding, root, "host-expired", hostTransport({ expireBeforeSend: true }))).state, "uncertain");
-  assert.equal(hostSends, 2); binding.expiresAt = savedExpiry;
-  assert.equal((await hostOperation(binding, root, "still-active", hostTransport({ requireIdle: true }))).state, "not_idle");
-  assert.equal(hostSends, 2);
+  assert.equal(hostSends, 3); binding.expiresAt = savedExpiry;
+  const active = await hostOperation(binding, root, "still-active", hostTransport({ requireIdle: true }));
+  assert.equal(active.state, "not_idle"); assert.equal(JSON.parse(readFileSync(join(root, "host-report-still-active.json"))).state, "not_idle");
+  const activeDuplicate = await hostOperation(binding, root, "still-active", hostTransport({ requireIdle: true, idle: true }));
+  assert.equal(activeDuplicate.state, "not_idle"); assert(activeDuplicate.deduplicated);
+  await assert.rejects(hostOperation(binding, root, "still-active", hostTransport({ requireIdle: true, idle: true,
+    report: { ...report, summary: "Different after not_idle." } })), /conflicts/);
+  assert.equal(hostSends, 3);
   const idleSent = await hostOperation(binding, root, "idle-probe", hostTransport({ requireIdle: true, idle: true }));
   assert.equal(idleSent.targetStatusBeforeSend.type, "idle"); assert.equal(idleSent.state, "accepted");
-  assert.equal(hostSends, 3);
+  assert.equal(hostSends, 4);
   const idleDuplicate = await hostOperation(binding, root, "idle-probe", hostTransport({ requireIdle: true }));
-  assert.equal(idleDuplicate.state, "accepted"); assert(idleDuplicate.deduplicated); assert.equal(hostSends, 3);
+  assert.equal(idleDuplicate.state, "accepted"); assert(idleDuplicate.deduplicated); assert.equal(hostSends, 4);
   const unloadedSent = await hostOperation(binding, root, "unloaded-probe", hostTransport({ requireIdle: true, unloaded: true }));
-  assert.equal(unloadedSent.targetStatusBeforeSend.type, "notLoaded"); assert.equal(unloadedSent.state, "accepted"); assert.equal(hostSends, 4);
+  assert.equal(unloadedSent.targetStatusBeforeSend.type, "notLoaded"); assert.equal(unloadedSent.state, "accepted"); assert.equal(hostSends, 5);
+  const activeFirstSends = hostSends;
+  const activeFirst = await Promise.all([
+    hostOperation(binding, root, "active-first-race", hostTransport({ requireIdle: true })),
+    hostOperation(binding, root, "active-first-race", hostTransport({ requireIdle: true, idle: true, readDelay: 10 }))
+  ]);
+  assert(activeFirst.every(value => value.state === "not_idle")); assert.equal(hostSends, activeFirstSends);
+  const idleFirstSends = hostSends;
+  const idleFirst = await Promise.all([
+    hostOperation(binding, root, "idle-first-race", hostTransport({ requireIdle: true, readDelay: 10 })),
+    hostOperation(binding, root, "idle-first-race", hostTransport({ requireIdle: true, idle: true }))
+  ]);
+  assert(idleFirst.every(value => value.state === "accepted")); assert.equal(hostSends, idleFirstSends + 1);
   await assert.rejects(hostOperation(binding, root, "host-one", hostTransport({ requireIdle: true })), /conflicts/);
-  await assert.rejects(callTool("codex_host_report", { requestId: "retired-option", waitForIdle: true }, deps), /Invalid host arguments/);
+  await assert.rejects(callTool("codex_host_report", { requestId: "retired-option", waitForIdle: true, report }, deps), /Invalid host arguments/);
+  const limitRoot = join(root, "report-limit"); mkdirSync(limitRoot);
+  writeFileSync(join(limitRoot, "host-config.json"), JSON.stringify(hostConfig));
+  for (let index = 0; index < MAX_HOST_REPORTS; index++)
+    writeFileSync(join(limitRoot, `host-report-limit-${index}.json`), JSON.stringify({ state: "accepted" }));
+  assert(hostReportSummary(limitRoot).full);
+  await assert.rejects(hostOperation(binding, limitRoot, "over-limit", hostTransport()), /receipt limit reached/);
+  assert.deepEqual(await hostOperation(binding, limitRoot, undefined, { ...hostTransport({ listResult }), view: "active_count" }), count);
   writeFileSync(hostConfigPath, JSON.stringify({ ...hostConfig, expiresAt: "2000-01-01T00:00:00Z" }));
   await assert.rejects(hostOperation(binding, root, "host-stale", hostTransport()), /expired/);
 
@@ -259,7 +363,12 @@ try {
   const probe = JSON.parse(readFileSync(join(root, "hook-events.json"), "utf8"));
   assert.equal(probe.events.length, 200); assert(!JSON.stringify(probe).includes("do not persist"));
 
-  for (const relative of ["../.zcode-plugin/plugin.json", "../.mcp.json", "../../marketplace.json", "../hooks/hooks.json"])
+  for (const relative of ["../.mcp.json", "../hooks/hooks.json"])
     JSON.parse(readFileSync(fileURLToPath(new URL(relative, import.meta.url)), "utf8"));
-  console.log("zcode-codex-bridge: offline binding diagnostics (zero send/write), host adapter, concurrent dedup, lost acknowledgement, expiry, target check, no history exposure, legacy send lock, MCP lifecycle, Hook probe and manifests OK");
+  const pluginManifest = JSON.parse(readFileSync(fileURLToPath(new URL("../.zcode-plugin/plugin.json", import.meta.url)), "utf8"));
+  const packageManifest = JSON.parse(readFileSync(fileURLToPath(new URL("../package.json", import.meta.url)), "utf8"));
+  const marketplace = JSON.parse(readFileSync(fileURLToPath(new URL("../../marketplace.json", import.meta.url)), "utf8"));
+  assert.equal(pluginManifest.version, "0.3.1"); assert.equal(packageManifest.version, pluginManifest.version);
+  assert.equal(marketplace.plugins[0].version, pluginManifest.version);
+  console.log("zcode-codex-bridge: structured notification schema, fixed target/cwd, concurrent payload dedup, unknown no-replay, bounded receipts, offline setup diagnostics, legacy send lock, MCP lifecycle, Hook probe and manifests OK");
 } finally { rmSync(root, { recursive: true, force: true }); }

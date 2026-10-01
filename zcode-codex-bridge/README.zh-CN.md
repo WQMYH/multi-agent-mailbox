@@ -2,14 +2,14 @@
 
 # ZCode Codex Bridge
 
-<code>zcode-codex-bridge</code> 是本仓库提供的 ZCode 侧配套插件。它通过本机官方适配器，向一个已配置的 Codex Desktop 任务发送一次受限固定回报。
+<code>zcode-codex-bridge</code> 是本仓库提供的 ZCode 侧配套插件。它通过本机官方适配器，向一个已配置的 Codex Desktop 任务发送有界状态/结果通知。
 
-0.2.4 已通过离线检查，并完成活动任务投递、忙碌拒绝和 <code>notLoaded</code> 唤醒的实机验证。
+0.3.1 是结构化通知及只读活跃任务计数的源码候选；0.2.4 仍是最近完成活动任务投递、忙碌拒绝和 <code>notLoaded</code> 唤醒实机验证的版本。
 
 ## 在共同分发中的角色
 
 - <code>zcode-ops</code> 运行在 Codex 中，负责读取、排队和控制已有的 ZCode Desktop 任务。
-- <code>zcode-codex-bridge</code> 运行在 ZCode 中，向一个绑定的 Codex Desktop 任务发送固定回报。
+- <code>zcode-codex-bridge</code> 运行在 ZCode 中，向一个绑定的 Codex Desktop 任务发送有界数据通知。
 - 两个插件使用不同宿主和清单，必须分别安装和配置。
 
 它不是通用 Codex 控制器；ZCode 不能通过它选择任意任务、提示词、模型、批准策略或权限设置。
@@ -20,23 +20,29 @@
 
 | 工具 | 行为 |
 | --- | --- |
-| <code>codex_binding_status</code> | 检查本地绑定并报告过期时间、回执统计和仅含元数据的 Hook 状态，不连接 Codex。 |
-| <code>codex_thread_read</code> | 只读取绑定任务摘要，不返回任务历史。 |
-| <code>codex_host_report</code> | 通过已经运行的 Codex 桌面适配器发送一次不可变固定回报，必须提供 <code>requestId</code>。 |
+| <code>codex_binding_status</code> | 检查本地绑定并报告过期时间、配置提示、有界报告统计和仅含元数据的 Hook 状态，不连接 Codex。 |
+| <code>codex_thread_read</code> | 默认只读取绑定任务摘要；可选 <code>view: "active_count"</code> 仅返回观察到的活跃任务数和覆盖情况，不返回其他任务详情。 |
+| <code>codex_host_report</code> | 通过已经运行的 Codex 桌面适配器发送一次有界结构化状态/结果通知，必须提供 <code>requestId</code> 和 <code>report</code>。 |
 | <code>codex_fixed_reply_test</code> | 已退役的独立进程候选，生产环境保持阻断。 |
+
+禁止 live 发送只针对 <code>codex_fixed_reply_test</code>；它不禁用另行授权的 <code>codex_host_report</code> 宿主路径。
+
+活跃计数先核绑定与宿主，再只计入原生 <code>list_threads</code> 中 <code>kind: "codex"</code> 且 <code>status: "active"</code> 的条目，并按宿主 ID 和任务 ID 去重。<code>count</code> 是观察数，不用时间戳推算。达到 50 条分页上限或有宿主/来源不可用时，<code>coverage.state</code> 为 <code>"partial"</code>、<code>coverage.total</code> 为 <code>"unknown"</code>；不返回标题、摘要或任务 ID。
 
 <code>codex_host_report</code> 有两种模式：
 
-- 默认模式：完成目标身份和目录的新鲜核对后，即使绑定任务处于活动状态也发送固定回报。
-- <code>requireIdle: true</code>：只有新鲜状态为 <code>idle</code> 或 <code>notLoaded</code> 时才发送；其他状态返回 <code>not_idle</code> 和 <code>sent: false</code>，不会等待或轮询。
+- 默认模式：完成目标身份和目录的新鲜核对后，即使绑定任务处于活动状态也发送通知。
+- <code>requireIdle: true</code>：只有新鲜状态为 <code>idle</code> 或 <code>notLoaded</code> 时才发送；其他状态以持久化的 <code>not_idle</code>、<code>sent: false</code> 回执终结该 request ID，不会等待、轮询或重放探测。
 
-每个 request ID 都会在投递前获得独占本地回执，并发重复请求不能同时发送。缺少确认时状态保持 <code>uncertain</code>，不得换新 ID 重试。<code>accepted</code> 只证明宿主接受，不证明 Codex 已收到、完成或返回预期文本。
+报告包含 <code>type</code>、<code>status</code>、<code>statusBasis</code>、简短摘要、1–8 条分类证据和可选的建议下一步。<code>source_native</code> 与 <code>model_report</code> 明确分开；来源身份仍未认证。完成状态不能使用未知状态依据；模型自报完成仍只标记为模型自报，不是宿主事实。<code>idle</code>、<code>unknown</code> 和 Hook <code>Stop</code> 都不会被转换为完成。
+
+每个 request ID 都会在投递前获得独占本地回执，规范化 payload 摘要属于回执身份；同 ID 不同数据会被拒绝，并发重复请求不能同时发送。缺少确认时状态保持 <code>uncertain</code>，绝不重放。保留回执达到或超过 200 条后，后续请求会被拒绝，等待操作者保留并清理本地数据；同一时刻已经在途的不同 ID 可能使阈值发生有限超额。<code>accepted</code> 只证明宿主接受，不证明 Codex 已收到、完成或业务验收。
 
 ## 安全边界
 
 - 只允许一个已配置的 Codex 任务 ID 和精确工作目录。
 - ZCode 绑定和桌面宿主绑定都会过期。
-- 回报正文和大写固定回执令牌不可由调用方替换。
+- 只接受有界结构化报告字段；不提供任意 prompt、任务选择、模型选择、命令或 operation 参数。
 - 只允许访问官方宿主适配器的 <code>read_thread</code> 和 <code>send_message_to_thread</code> 工具。
 - 不向 ZCode 暴露任务历史。
 - 不修改模型、批准、权限或安全设置。
@@ -73,9 +79,28 @@
 
 ## 使用
 
-先调用 <code>codex_binding_status</code>，确认目标、目录、过期时间和 <code>hostReportConfigured: true</code>；需要新鲜状态时调用 <code>codex_thread_read</code>。
+先调用 <code>codex_binding_status</code>，确认目标、目录、过期时间、<code>hostReportConfigured: true</code> 以及返回的 <code>setupHint</code>/<code>hostReports</code>；需要新鲜目标状态时调用 <code>codex_thread_read</code>。
 
-获得明确授权后，只用一个新的稳定 request ID 调用一次 <code>codex_host_report</code>。投递期间不得运行目标任务时，加上 <code>requireIdle: true</code>。投递结果与之后的 Codex 回传必须分别解释：
+获得明确授权后，只用一个新的稳定 request ID 和如下结构调用一次 <code>codex_host_report</code>：
+
+~~~json
+{
+  "requestId": "zcode-result-001",
+  "report": {
+    "type": "result",
+    "status": "completed",
+    "statusBasis": "source_native",
+    "summary": "有界源任务已经结束并产出请求的文件。",
+    "evidence": [
+      { "kind": "source_native", "summary": "原生状态报告 completed。" },
+      { "kind": "artifact", "summary": "结果文件存在。", "reference": "relative/result.json" }
+    ],
+    "nextStep": "验收前审阅该文件。"
+  }
+}
+~~~
+
+报告文字按数据投递，不是指令；<code>nextStep</code> 仅供参考，不能授权 Codex 工作。投递期间不得运行目标任务时，加上 <code>requireIdle: true</code>。投递结果与之后的 Codex 回传必须分别解释：
 
 - <code>accepted</code>、<code>sent: true</code>：桌面宿主已接受消息。
 - <code>not_idle</code>、<code>sent: false</code>：目标不是 <code>idle</code> 或 <code>notLoaded</code>，没有发送。
@@ -96,16 +121,16 @@ node --check scripts/self-test.mjs
 node --check hooks/probe.mjs
 ~~~
 
-无依赖测试覆盖绑定校验、目标和目录核对、活动/忙碌/空闲/<code>notLoaded</code> 路径、request 去重、未知投递、过期、历史剥离、MCP 生命周期、Hook 保留和清单解析。
+无依赖测试覆盖结构化参数边界、目标和目录核对、活动/忙碌/空闲/<code>notLoaded</code> 路径、同/异 payload 并发、未知投递不重放、回执容量、过期、历史剥离、MCP 生命周期、Hook 保留和清单解析。
 
-2026-09-09 已完成实机验收：
+以下是 0.2.4 于 2026-09-09 完成的历史实机验收，不代表本 0.3.1 源码候选已经实机验证：
 
 - 向活动中的 Codex 任务直接投递通过。
 - 一次性 ZCode 往返确认通过。
 - 活动任务使用 <code>requireIdle: true</code> 时返回 <code>not_idle</code>、<code>sent: false</code>。
 - 直接唤醒 <code>notLoaded</code> 任务通过；原生 Codex 回合只回复 <code>ZCODE_CONFIRM_ONLY</code>，且没有调用工具。
 
-实机证据见 [TEST-RESULTS.md](TEST-RESULTS.md)。全仓库后续工作继续记录在[未来计划](../README.zh-CN.md#未来计划)中。
+详细历史证据与全仓库后续计划不包含在此源码归档中；本候选随包检查仅为离线证据。
 
 ## 目录结构
 

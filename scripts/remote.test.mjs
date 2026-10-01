@@ -50,6 +50,7 @@ try {
 }
 
 const calls = [];
+let bridgeOpen, createdTaskId = "sess_created";
 let currentModel = "builtin:bigmodel-coding-plan/GLM-5.3-Flash";
 const modelOptions = [
   { value: "builtin:bigmodel-coding-plan/GLM-5.3-Flash", name: "GLM-5.3-Flash" },
@@ -61,6 +62,7 @@ const snapshot = () => ({ messages: [{ id: "answer", role: "assistant", content:
   meta: { model: currentModel, thoughtLevel: "max" }, configOptions: configOptions() });
 class FakeSocket extends EventTarget {
   readyState = 0;
+  awaitingAck = null;
   constructor() { super(); queueMicrotask(() => { this.readyState = 1; this.dispatchEvent(new Event("open")); }); }
   message(value) { this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(value) })); }
   send(raw) {
@@ -68,11 +70,18 @@ class FakeSocket extends EventTarget {
     queueMicrotask(() => {
       if (m.type === "auth_init") this.message({ type: "auth_challenge", nonce: "test-nonce" });
       else if (m.type === "auth_response") this.message({ type: "auth_ack", pair_status: "matched" });
-      else if (m.payload?.zcode_type === "workspace-list-request") this.message({ type: "data", payload: { zcode_type: "workspace-list-response", requestId: m.payload.requestId, result: { workspaces: [], tasks: [{ taskId: "sess_test" }] } } });
+      else if (m.payload?.zcode_type === "workspace-list-request") this.message({ type: "data", payload: { zcode_type: "workspace-list-response", requestId: m.payload.requestId, result: { workspaces: [{ kind: "local", workspacePath: "test-workspace", connectionState: "connected" }], tasks: [{ taskId: "sess_test" }] } } });
       else if (m.payload?.zcode_type === "workspace-bridge-open") {
+        bridgeOpen = m.payload;
         Object.assign(bridge, { bridgeSessionId: m.payload.bridgeSessionId });
+        if (m.payload.taskId) bridge.initialTaskId = m.payload.taskId; else delete bridge.initialTaskId;
         this.message({ type: "data", payload: { zcode_type: "workspace-bridge-ready", bridgeSessionId: bridge.bridgeSessionId, bridge } });
+      } else if (m.payload?.zcode_type === "rpc-frame-ack") {
+        if (m.payload.bridgeSessionId === bridge.bridgeSessionId && m.payload.bridgeGeneration === bridge.bridgeGeneration &&
+            m.payload.ackMessageSeq === this.awaitingAck) this.awaitingAck = null;
       } else if (m.payload?.zcode_type === "rpc-frame") {
+        // Saturated native bridges resume only after an identity-matching ACK.
+        if (this.awaitingAck !== null) return;
         const [header, args] = decode(new FrameReader().accept(m.payload));
         calls.push({ header, args });
         if (header[3] === "getTaskSnapshot" && args[0].resumeModelPolicy !== "ui-resolved-only") {
@@ -80,8 +89,10 @@ class FakeSocket extends EventTarget {
           this.message({ type: "data", payload: frames(bytes, bridge, header[1])[0] }); return;
         }
         if (header[3] === "setConfigOption") currentModel = args[0].value;
-        const body = header[3] === "getTaskSnapshot" ? snapshot() : header[3] === "getTaskConfigOptions" ? configOptions() : { accepted: true };
+        const body = header[3] === "getTaskSnapshot" ? snapshot() : header[3] === "getTaskConfigOptions" ? configOptions() :
+          header[3] === "createTask" ? { taskId: createdTaskId } : { accepted: true };
         const bytes = Buffer.concat([encode([201, header[1]]), encode(body)]);
+        this.awaitingAck = header[1];
         this.message({ type: "data", payload: frames(bytes, bridge, header[1])[0] });
       }
     });
@@ -114,6 +125,8 @@ for (const part of [...desktopParts].reverse()) {
 }
 assert.equal(received.body, largeBody);
 assert.equal(acknowledgments.length, 1);
+assert.deepEqual(acknowledgments[0], { zcode_type: "rpc-frame-ack", bridgeSessionId: bridge.bridgeSessionId,
+  bridgeGeneration: bridge.bridgeGeneration, ackMessageSeq: 99 }, "ACK must match the native bridge generation to drain large replies");
 assert.equal(receiver.reader.pending.size, 0);
 assert.throws(() => new FrameReader().accept({ ...desktopParts[0], dataBase64: "A".repeat(1024 * 1024 + 4) }), /Invalid remote frame/);
 assert.throws(() => new FrameReader().accept({ ...desktopParts[0], messageBytes: 16 * 1024 * 1024 + 1 }), /Invalid remote frame/);
@@ -131,8 +144,30 @@ assert(!("model" in calls.at(-1).args[0])); assert(!("permissionPolicy" in calls
 await client.stop({ taskId: "sess_test", workspacePath: "test-workspace" });
 assert.equal(calls.at(-1).header[3], "stopGeneration");
 assert.deepEqual(calls.at(-1).args[0], { taskId: "sess_test", workspacePath: "test-workspace" });
-await assert.rejects(client.rpc("createTask", {}), /not allowed/);
+await client.openWorkspace({ workspacePath: "test-workspace", kind: "local" });
+assert.equal(Object.hasOwn(bridgeOpen, "taskId"), false, "New-task bridge must omit taskId");
+assert.equal((await client.createTask({ workspacePath: "test-workspace" })).taskId, "sess_created");
+assert.deepEqual(calls.at(-1).args[0], { workspacePath: "test-workspace", deferPersistenceUntilFirstPrompt: true });
+await client.openWorkspace({ workspacePath: "test-workspace", workspaceIdentity: "remote-identity", kind: "remote", connectionState: "connected" });
+assert.equal(bridgeOpen.workspaceKey, "remote-identity");
+assert.equal(Object.hasOwn(bridgeOpen, "taskId"), false);
+assert.equal((await client.createTask({ workspacePath: "test-workspace", workspaceIdentity: "remote-identity" })).taskId, "sess_created");
+assert.deepEqual(calls.at(-1).args[0], { workspacePath: "test-workspace", workspaceIdentity: "remote-identity",
+  deferPersistenceUntilFirstPrompt: true });
+await assert.rejects(client.createTask({ workspacePath: "other-workspace" }), /differs from the attached workspace/);
+createdTaskId = "made-up";
+await assert.rejects(client.createTask({ workspacePath: "test-workspace" }), /invalid created task ID/);
+createdTaskId = "sess_created";
+await assert.rejects(client.rpc("deleteTask", {}), /not allowed/);
 assert(!client.sanitized(Error("test-password")).message.includes("test-password"));
+for (const code of ["ZCODE_TASK_NOT_FOUND", "DEVICE_OFFLINE"]) {
+  const safe = client.sanitized(Object.assign(Error(`test-password ${url}`), { code, details: "test-password" }));
+  assert.equal(client.sanitized(safe).code, code, "Nested sanitization preserves recognized failure codes");
+  assert(!safe.message.includes("test-password")); assert(!safe.message.includes("https://"));
+  assert.equal(safe.details, undefined);
+}
+assert.equal(client.sanitized(Object.assign(Error("failure"), { code: "test-password" })).code, undefined);
+assert.equal(client.sanitized(Object.assign(Error("native rejected"), { rpcRejected: true })).rpcRejected, true);
 const waiting = client.wait(() => false); await client.close(); await assert.rejects(waiting, /ended/);
 const offline = new RemoteClient(url, { timeoutMs: 5 });
 await assert.rejects(offline.wait(() => false), /timed out/);

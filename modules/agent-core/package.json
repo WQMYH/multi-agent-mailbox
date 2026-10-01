@@ -1,0 +1,9 @@
+{
+  "name": "agent-core",
+  "version": "0.1.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "engines": { "node": ">=24" },
+  "scripts": { "test": "node test/agent-core.test.mjs" }
+}

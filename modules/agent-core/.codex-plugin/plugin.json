@@ -1,0 +1,21 @@
+{
+  "name": "agent-core",
+  "version": "0.1.0",
+  "license": "Apache-2.0",
+  "description": "Multi-Agent Mailbox: shared local CLI/MCP access to mail and optional native agent adapters.",
+  "author": { "name": "WQMYH" },
+  "interface": {
+    "displayName": "Multi-Agent Mailbox",
+    "shortDescription": "Exchange local agent messages through three shared tools.",
+    "longDescription": "Discover registered mail and native adapters on demand. Keeps registration explicit, separates reads from actions, and preserves durable queue ownership and receipts.",
+    "developerName": "WQMYH",
+    "category": "Productivity",
+    "capabilities": ["Interactive", "Write"],
+    "defaultPrompt": [
+      "List registered agent modules",
+      "Describe one selected agent module",
+      "Read from a selected agent module"
+    ]
+  },
+  "mcpServers": "./.mcp.json"
+}

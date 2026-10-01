@@ -15,6 +15,7 @@ try {
   q = new MessageQueue();
   const old = q.enqueue({ requestId: "old", taskIds: ["sess_blocked"], teamId: "old-team", prompt: "private old body" }).messages[0].messageId;
   q.state(q.get(old), "needs_attention");
+  const superseded = q.enqueue({ requestId: "superseded", taskIds: ["sess_blocked"], teamId: "old-team", prompt: "old follow-up" }).messages[0].messageId;
   const input = { requestId: "new", taskIds: ["sess_blocked"], teamId: "new-team", prompt: "new authorized work" };
   const expected = { blockedReason: "same_task_fifo", blockedByMessageId: old, blockedByState: "needs_attention" };
   const blockedFields = value => Object.fromEntries(Object.keys(expected).map(k => [k, value[k]]));
@@ -44,12 +45,27 @@ try {
   q.state(q.get(other), "completed");
   assert.equal(q.continueOrRelease(token), false, "All remaining heads need attention; worker retires");
   assert.equal(q.worker().token, null);
+  q.state(q.get(superseded), "dispatching");
+  await assert.rejects(callPublicTool("zcode_control", { action: "release_message", messageId: superseded }, deps), /manually released/);
+  assert.equal(q.get(superseded).state, "dispatching", "A claimed send cannot be released as an unsent routing assignment");
+  q.state(q.get(superseded), "queued");
+  const preserved = [old, superseded].map(id => ({ row: q.get(id),
+    events: q.db.prepare("SELECT * FROM events WHERE message_id=? ORDER BY seq").all(id) }));
+  const retired = await callPublicTool("zcode_control", { action: "release_message", messageId: superseded }, deps);
+  assert.equal(retired.state, "released"); assert.equal(retired.businessAccepted, false); assert.equal(retired.remoteStopped, false);
+  assert.equal(launches, 1, "Retire obsolete queued followers before resolving the blocked head");
+  assert.equal(q.blocking(nextId).blockedByMessageId, old);
   const released = await callPublicTool("zcode_control", { action: "release_message", messageId: old }, deps);
   assert.equal(released.state, "released"); assert.equal(launches, 2, "Release wakes an already requested worker for its existing follower");
+  for (const { row, events } of preserved) {
+    assert.deepEqual({ ...q.get(row.id) }, { ...row, state: "released" }, "Release preserves the original message and correlation data");
+    assert.deepEqual(q.db.prepare("SELECT * FROM events WHERE message_id=? ORDER BY seq").all(row.id).slice(0, events.length), events);
+  }
   const after = await callPublicTool("zcode_read", { view: "inbox", teamId: "new-team", cursor: inbox.cursor }, deps);
   assert.equal(after.messages[0].blockedByMessageId, null, "Blocker cleared even without new events in this team");
   await tick(q, token, connect); await tick(q, token, connect);
   assert.equal(sends.length, 2); assert(sends[1].prompt.endsWith(input.prompt));
+  assert(sends.every(s => !s.prompt.includes(marker(old)) && !s.prompt.includes(marker(superseded))), "Preserved obsolete messages must never dispatch");
   assert.equal(q.get(nextId).state, "acknowledged");
 
   // Pausing is authoritative even if release would otherwise wake the worker.

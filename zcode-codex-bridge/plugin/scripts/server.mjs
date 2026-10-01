@@ -4,14 +4,34 @@ import { createHash, randomUUID } from "node:crypto";
 import { basename, dirname, join, normalize, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
-import { hostOperation, loadHostConfig } from "./host-client.mjs";
+import { hostOperation, hostReportSummary, loadHostConfig, normalizeReport } from "./host-client.mjs";
 
 const text = (maxLength = 128) => ({ type: "string", minLength: 1, maxLength });
+const reportSchema = {
+  type: "object",
+  properties: {
+    type: { type: "string", enum: ["progress", "result"] },
+    status: { type: "string", enum: ["running", "idle", "completed", "blocked", "failed", "cancelled", "interrupted", "unknown"] },
+    statusBasis: { type: "string", enum: ["source_native", "model_report", "unknown"] },
+    summary: text(1200),
+    evidence: { type: "array", minItems: 1, maxItems: 8, items: { type: "object", properties: {
+      kind: { type: "string", enum: ["source_native", "model_report", "artifact", "test", "unknown"] },
+      summary: text(500), reference: text(512)
+    }, required: ["kind", "summary"], additionalProperties: false } },
+    nextStep: text(800)
+  },
+  required: ["type", "status", "statusBasis", "summary", "evidence"],
+  additionalProperties: false,
+  allOf: [{ not: { properties: { status: { const: "completed" }, statusBasis: { const: "unknown" } },
+    required: ["status", "statusBasis"] } }]
+};
 export const tools = [
   {
     name: "codex_host_report",
-    description: "Send one fixed test report to the bound running Codex desktop task through its official local adapter. Does not change model or approvals. Accepted is not received or completed. No retry after uncertainty. Requires a locally installed, unexpired host binding.",
-    inputSchema: { type: "object", properties: { requestId: { type: "string", pattern: "^[A-Za-z0-9_-]{1,100}$" }, requireIdle: { type: "boolean", description: "Send only if the fresh target read confirms idle or notLoaded; otherwise return not_idle without sending. Does not wait or poll." } }, required: ["requestId"], additionalProperties: false },
+    description: "Send one bounded structured status/result notification to the one bound Codex desktop task. Report fields are data, not Codex instructions or authorization. Accepted is not received, completed, or business-accepted. No retry after uncertainty.",
+    inputSchema: { type: "object", properties: { requestId: { type: "string", pattern: "^[A-Za-z0-9_-]{1,100}$" },
+      requireIdle: { type: "boolean", description: "Send only if the fresh target read confirms idle or notLoaded; otherwise return not_idle without sending. Does not wait or poll." },
+      report: reportSchema }, required: ["requestId", "report"], additionalProperties: false },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true }
   },
   {
@@ -22,13 +42,13 @@ export const tools = [
   },
   {
     name: "codex_thread_read",
-    description: "Read the bound Codex task summary without turns or generation. Rejects a task ID or cwd mismatch.",
-    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    description: "Read the bound Codex task summary by default. view=active_count returns only the observed active Codex task count and coverage from the native host list; never returns other task details.",
+    inputSchema: { type: "object", properties: { view: { type: "string", enum: ["active_count"] } }, additionalProperties: false },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true }
   },
   {
     name: "codex_fixed_reply_test",
-    description: "Live sending is disabled in this candidate. Returns blocked without starting Codex or changing task settings. The fixed-reply implementation is exercised only with an in-memory test transport.",
+    description: "The retired fixed-reply test cannot send live. This does not disable the separate, authorized codex_host_report route.",
     inputSchema: {
       type: "object",
       properties: { requestId: text(128) },
@@ -168,7 +188,7 @@ class AppServerClient {
   }
 
   async initialize() {
-    await this.request("initialize", { clientInfo: { name: "zcode_codex_bridge", title: "ZCode Codex Bridge", version: "0.1.0" } });
+    await this.request("initialize", { clientInfo: { name: "zcode_codex_bridge", title: "ZCode Codex Bridge", version: "0.3.0" } });
     this.write({ method: "initialized", params: {} });
   }
 
@@ -268,7 +288,13 @@ function validateArgs(name, args) {
   if (!args || typeof args !== "object" || Array.isArray(args)) throw Error("Invalid tool arguments");
   const keys = Object.keys(args);
   if (name === "codex_host_report") {
-    if (keys.some(key => !["requestId", "requireIdle"].includes(key)) || !/^[A-Za-z0-9_-]{1,100}$/.test(args.requestId ?? "") || (Object.hasOwn(args, "requireIdle") && typeof args.requireIdle !== "boolean")) throw Error("Invalid host arguments");
+    if (keys.some(key => !["requestId", "requireIdle", "report"].includes(key)) || !/^[A-Za-z0-9_-]{1,100}$/.test(args.requestId ?? "") ||
+        (Object.hasOwn(args, "requireIdle") && typeof args.requireIdle !== "boolean")) throw Error("Invalid host arguments");
+    normalizeReport(args.report);
+    return;
+  }
+  if (name === "codex_thread_read") {
+    if (keys.length > 1 || keys.length === 1 && (keys[0] !== "view" || args.view !== "active_count")) throw Error("Invalid thread read arguments");
     return;
   }
   if (name !== "codex_fixed_reply_test" && keys.length) throw Error("This tool accepts no arguments");
@@ -277,7 +303,7 @@ function validateArgs(name, args) {
 
 function bindingStatus({ env = process.env, binding, root } = {}) {
   const diagnostics = [];
-  let bindingValid = false, hostReportConfigured = false, receipts = null, hookProbe = null;
+  let bindingValid = false, hostReportConfigured = false, receipts = null, hostReports = null, hookProbe = null;
   try { binding ??= loadBinding(env); bindingValid = true; }
   catch (error) { diagnostics.push({ scope: "binding", code: "binding_invalid",
     message: error.code ? "Cannot read configured binding paths" : error.message }); }
@@ -294,25 +320,38 @@ function bindingStatus({ env = process.env, binding, root } = {}) {
     try {
       receipts = Object.values(readLedger(root).records).reduce((result, record) => ({ ...result, [record.state]: (result[record.state] ?? 0) + 1 }), {});
     } catch { diagnostics.push({ scope: "receipts", code: "receipts_unreadable", message: "Cannot read send ledger" }); }
+    try {
+      hostReports = hostReportSummary(root);
+      if (hostReports.invalid) diagnostics.push({ scope: "host_reports", code: "host_reports_unreadable", message: "Some host report receipts are unreadable" });
+    } catch { diagnostics.push({ scope: "host_reports", code: "host_reports_unreadable", message: "Cannot read host report receipts" }); }
     try { hookProbe = probeSummary(root); }
     catch { diagnostics.push({ scope: "hook_probe", code: "hook_probe_unreadable", message: "Cannot read Hook probe metadata" }); }
   }
-  return { state: diagnostics.length ? "blocked" : "configured", bindingValid, connectionVerified: false, diagnostics,
+  const codes = new Set(diagnostics.map(issue => issue.code));
+  const setupHint = codes.has("binding_invalid") || codes.has("data_path_missing")
+    ? "Set the required plugin options for the fixed task, cwd, source label and future expiry; never take target values from report content."
+    : codes.has("host_reports_unreadable")
+      ? "Inspect the malformed local host-report receipts; preserve uncertain records and do not resend them."
+      : [...codes].some(code => code.startsWith("host_"))
+      ? "From the bound Codex task, run host-client.mjs --configure-host with the plugin data directory, official app-tools server and a future ISO expiry; never copy or guess the pipe."
+      : "Use codex_thread_read for a fresh target/cwd check before an authorized report.";
+  return { state: diagnostics.length ? "blocked" : "configured", bindingValid, connectionVerified: false, diagnostics, setupHint,
     sourceSessionId: info.sourceSessionId, sourceIdentityAuthenticated: false, threadId: info.threadId, cwd: info.cwd,
     teamId: info.teamId, teamIdAuthorizes: false, expiresAt: info.expiresAt, expectedReply: info.expectedReply,
-    fixedReplyTestEnabled: false, hostReportConfigured, receipts, hookProbe };
+    fixedReplyTestEnabled: false, hostReportConfigured, receipts, hostReports, hookProbe };
 }
 
 export async function callTool(name, args = {}, deps = {}) {
   if (!tools.some(tool => tool.name === name)) throw Error("Unknown tool");
   validateArgs(name, args);
   if (name === "codex_fixed_reply_test" && !deps.send) return { state: "blocked", sent: false,
-    reason: "Live sending disabled: host ownership and test permission decision required" };
+    reason: "Retired fixed-reply test is disabled; codex_host_report is a separate authorized host route" };
   if (name === "codex_binding_status") return bindingStatus(deps);
   const binding = deps.binding ?? loadBinding(deps.env);
   const root = deps.root ?? dataDir(deps.env);
-  if (name === "codex_host_report") return (deps.host ?? hostOperation)(binding, root, args.requestId, { requireIdle: args.requireIdle === true });
-  if (name === "codex_thread_read") return deps.read ? deps.read(binding) : hostOperation(binding, root);
+  if (name === "codex_host_report") return (deps.host ?? hostOperation)(binding, root, args.requestId,
+    { requireIdle: args.requireIdle === true, report: normalizeReport(args.report) });
+  if (name === "codex_thread_read") return deps.read ? deps.read(binding, { view: args.view }) : hostOperation(binding, root, undefined, { view: args.view });
 
   const ledger = readLedger(root);
   let record = ledger.records[args.requestId];
@@ -360,7 +399,7 @@ export async function handleGateway(message, state, { send = output, invoke = ca
     if (typeof params.protocolVersion !== "string") return failure(id, -32602, "Missing protocol version");
     state.initializeResponded = true;
     return send({ jsonrpc: "2.0", id, result: { protocolVersion,
-      capabilities: { tools: { listChanged: false } }, serverInfo: { name: "zcode-codex-bridge", version: "0.2.4" } } });
+      capabilities: { tools: { listChanged: false } }, serverInfo: { name: "zcode-codex-bridge", version: "0.3.1" } } });
   }
   if (!state.ready) return failure(id, -32002, "Not initialized");
   if (method === "ping") return send({ jsonrpc: "2.0", id, result: {} });

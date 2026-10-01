@@ -1,0 +1,15 @@
+{
+  "name": "qoder-codex-bridge",
+  "version": "0.1.0",
+  "description": "Qoder CN bridge for bound Codex lifecycle notices and explicit task selection with user-authored messages",
+  "author": { "name": "Qoder CN Desktop" },
+  "license": "Apache-2.0",
+  "hooks": "./hooks/hooks.json",
+  "mcpServers": "./mcp.json",
+  "commands": {
+    "codex-message": {
+      "source": "./commands/codex-message.md",
+      "description": "List Codex tasks, select one, and send an explicitly requested message"
+    }
+  }
+}

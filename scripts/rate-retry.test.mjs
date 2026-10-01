@@ -4,11 +4,19 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MessageQueue, RATE_RETRY } from "./message-queue.mjs";
 import { dispatch, tick } from "./queue-worker.mjs";
+import { RemoteClient, withRemote } from "./remote-client.mjs";
+import { writeConfig } from "./config.mjs";
 
 const dir = mkdtempSync(join(tmpdir(), "zcode-rate-retry-"));
 const realNow = Date.now;
+const originalConfig = process.env.ZCODE_OPS_CONFIG;
 let now = realNow(), q;
 Date.now = () => now;
+// Exercise production admission and error sanitization; only desktop I/O is simulated.
+const throughRemote = connect => action => withRemote(remote => connect(client => action(Object.assign(remote, client))), {
+  path: join(dir, "transport.sqlite"),
+  createClient: url => Object.assign(new RemoteClient(url), { connect: async () => {}, close: async () => {} })
+});
 function setup(name, count = 1) {
   q?.close(); q = new MessageQueue(join(dir, name + ".sqlite"));
   const tasks = Array.from({ length: count }, (_, i) => ({ taskId: `sess_${name}-${i}`,
@@ -38,6 +46,8 @@ function setup(name, count = 1) {
     reopen: () => { q.release(token); q.close(); q = new MessageQueue(join(dir, name + ".sqlite")); token = q.acquire(); } };
 }
 try {
+  process.env.ZCODE_OPS_CONFIG = join(dir, "config.json");
+  writeConfig({ sharingLink: "https://zcode.z.ai/remote/v4?sid=test-device&hash=test-secret&mid=test-machine" });
   const single = setup("single");
   await single.run(); assert.equal(single.sends.length, 1);
   single.reply(0); await single.run();
@@ -123,12 +133,13 @@ try {
   await missingRecovery.run(); missingRecovery.reply(0); await missingRecovery.run();
   now += RATE_RETRY.delayMs;
   missingRecovery.tasks.splice(0, 1);
+  missingRecovery.snapshots.splice(0, 1);
   missingRecovery.tasks.push({ taskId: "sess_after-missing", workspacePath: "workspace", workspaceKind: "local", displayStatus: "completed" });
   missingRecovery.snapshots.push({ messages: [] });
   const afterMissing = q.enqueue({ requestId: "after-missing", taskIds: ["sess_after-missing"], prompt: "new authorized work" }).messages[0].messageId;
-  await missingRecovery.run();
+  await tick(q, q.worker().token, throughRemote(missingRecovery.connect));
   assert.equal(q.get(missingRecovery.ids[0]).state, "needs_attention", "A missing retry target releases the global recovery slot without replay");
-  await missingRecovery.run();
+  await tick(q, q.worker().token, throughRemote(missingRecovery.connect));
   assert.equal(q.get(afterMissing).state, "acknowledged");
   assert.equal(missingRecovery.sends.length, 2, "Only the existing fresh message sends after the missing retry is isolated");
 
@@ -143,7 +154,7 @@ try {
   const lateMissingConnect = action => lateMissing.connect(client => action({ ...client, list: async () => ({
     tasks: ++listCalls < 3 ? lateMissing.tasks : lateMissing.tasks.filter(task => task.taskId !== lateTask.taskId)
   }) }));
-  await dispatch(q, q.get(lateMissing.ids[0]), q.worker().token, lateMissingConnect);
+  await dispatch(q, q.get(lateMissing.ids[0]), q.worker().token, throughRemote(lateMissingConnect));
   assert.equal(q.get(lateMissing.ids[0]).state, "needs_attention", "A target lost at the final inventory check releases its recovery slot");
   assert.equal(lateMissing.sends.length, 1, "The missing retry is not replayed");
   await dispatch(q, q.get(afterLateMissing), q.worker().token, lateMissing.connect);
@@ -203,4 +214,9 @@ try {
   assert.equal(q.get(migration.ids[0]).retry_count, 0); assert.equal(q.worker().rate_until, 0);
   assert.deepEqual(q.read().events, previous, "Schema-4 migration preserves messages and events");
   console.log("zcode-ops rate retry: 300s, five attempts, durable budget, shared cooldown, read continuity and manual-change guard OK");
-} finally { Date.now = realNow; q?.close(); rmSync(dir, { recursive: true, force: true }); }
+} finally {
+  Date.now = realNow;
+  if (originalConfig === undefined) delete process.env.ZCODE_OPS_CONFIG;
+  else process.env.ZCODE_OPS_CONFIG = originalConfig;
+  q?.close(); rmSync(dir, { recursive: true, force: true });
+}

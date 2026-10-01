@@ -5,8 +5,8 @@
     {
       "name": "zcode-codex-bridge",
       "source": "./plugin",
-      "description": "Bounded read and fixed-reply test for one existing Codex task",
-      "version": "0.2.4",
+      "description": "Bounded status and result notifications for one existing Codex task",
+      "version": "0.3.1",
       "category": "developer-tools",
       "strict": true
     }

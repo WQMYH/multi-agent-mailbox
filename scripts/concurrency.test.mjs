@@ -32,6 +32,16 @@ if (mode?.startsWith("--queue-child-")) {
           await delay(1);
         }
         process.send({ phase: "done", errors });
+      } else if (mode === "--queue-child-assignment") {
+        const q = new MessageQueue(path);
+        try {
+          q.enqueue({ requestId: `instance-${process.pid}`, taskIds: [`sess_${process.pid}`], prompt: "assignment",
+            context: { instanceId: "shared-instance", writeRoot: "E:/assignment/shared" } });
+          process.send({ phase: "done", accepted: true });
+        } catch (error) {
+          if (!error.message.startsWith("DUPLICATE_ASSIGNMENT:")) throw error;
+          process.send({ phase: "done", accepted: false });
+        } finally { q.close(); }
       } else if (mode === "--queue-child-remote") {
         for (let i = 0; i < 3; i++) await withRemote(async () => {
           const q = new MessageQueue(path);
@@ -92,6 +102,8 @@ if (mode?.startsWith("--queue-child-")) {
     q = new MessageQueue(path);
     assert.equal(q.db.prepare("SELECT count(*) AS n FROM messages").get().n, 81);
     assert.equal(q.db.prepare("SELECT count(*) AS n FROM messages WHERE request_id='shared'").get().n, 1);
+    const assignments = await group("assignment", join(dir, "assignments.sqlite"));
+    assert.equal(assignments.filter(r => r.accepted).length, 1, "Only one competing process admits a shared instance/writeRoot");
     q.db.exec("CREATE TABLE probe(seq INTEGER PRIMARY KEY,pid INTEGER,phase TEXT)");
     await group("remote", path);
     const visits = q.db.prepare("SELECT * FROM probe ORDER BY seq").all();

@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "id": "agent-zcode",
+  "name": "ZCode desktop",
+  "version": "0.1.0",
+  "entry": "./adapter.mjs",
+  "targets": [
+    { "id": "zcode-desktop", "kind": "desktop", "label": "ZCode" }
+  ]
+}

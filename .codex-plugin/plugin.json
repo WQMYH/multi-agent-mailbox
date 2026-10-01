@@ -1,6 +1,6 @@
 {
   "name": "zcode-ops",
-  "version": "0.1.6+codex.20260911183515",
+  "version": "0.1.6+codex.20260914185913",
   "license": "Apache-2.0",
   "description": "One Codex to orchestrate every agent, starting with ZCode.",
   "author": {

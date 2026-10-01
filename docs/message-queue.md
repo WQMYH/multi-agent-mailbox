@@ -15,13 +15,26 @@ zcode_control({ action: "resume", scope: "all", expectedRevision: paused.worker.
 ```
 
 taskA/taskB 必须为真实、经用户指定的任务 ID。重试同一发送沿用 requestId；正文、收件人、teamId 和 context 必须相同，否则拒绝。新消息使用新 ID。完整记录保留期间持续去重；正文清理后，整个请求所有收件人的精简记录至少再保留 7 天，之后才可一起过期。不要在去重记录过期后重放旧请求。
+创建新任务时使用单个 `workspace: { path: "当前窗口中已连接的工作区路径", identity?: "稳定工作区身份" }` 替代 `taskIds`；两者必须恰好传一个。workspace 模式只创建一个任务并发送这条首消息，不公开空任务创建或批量创建。远程工作区须提供 identity。返回的 `targetAddress` 是稳定队列地址，不是任务 ID；仅收到创建 ACK 且持久绑定后才出现真实 `createdTaskId`。同 requestId 重试仍返回原 messageId/targetAddress，不另建任务。
 收件箱可按 taskIds、teamId 或两者筛选；不传筛选读取全部队列记录。续读保持相同视图和过滤器，hasMore 时继续读。
 
 发送先持久化，再按需启动后台，不等待模型答复。明确暂停后，新发送只入队；resume 才恢复。后台没有可处理消息时自行退出，下次发送再启动，不随 Codex 启动或系统开机运行。
 启动请求不等于已运行：收件箱 worker.starting 表示已预留启动，running/heartbeat 表示实际存活，paused 表示用户暂停。启动预留在进程拉起前保存，过期启动者不能抢回所有权；恢复与退出交错时重新检查是否需要接班。
 pause/resume 仍是所有 team 共用的控制，必须明确传 scope:"all" 和最近读到的 worker.controlRevision；旧版本号拒绝，不允许较早的恢复操作覆盖别人刚做的暂停。pause 允许在途请求收尾，不停止 ZCode 模型。
 
+经 Agent Core 调用时，每个目标在原有 `messages[]` 结果内另带一个经 Core 校验的 `messageReceipt`。`deliveryId` 是持久消息 ID，同一 `requestId` 去重重试保持不变；`ownerId` 由规范化队列路径的 SHA-256 派生，并在 schema 7 的 `queue_owner` 单行中持久校验，不接受 sourceAgent、registrationId、PID 或调用方标签冒充。`owner.accepted` 只证明 SQLite 行已耐久写入；`provider` 初始为 `unknown`，worker 已启动、RPC/Sharing Link 可达或 ZCode 回显都不提升为供应商接收或业务完成。批量只返回逐目标事实，不承诺跨 owner 原子性；未知投递仍不重放。
+
 ## 顺序与状态
+
+### 实例与输出目录准入
+
+有独占输出的派发应声明 `context: { instanceId: "audit-r4", writeRoot: "E:/audits/audit-r4" }`。也兼容提示词里的显式 `identity={instanceId:"audit-r4"}`、`identity.instanceId="audit-r4"`、JSON 字段及 `writeRoot=...`；有空格的值须加引号，Windows 路径推荐正斜线。多处声明必须一致，无法解析或相对目录拒绝；只提到旧实例、`pairedPrimaryInstanceId` 或 writeRoot 的说明文字不构成声明。
+
+任一声明与另一条保留消息重复都会报 `DUPLICATE_ASSIGNMENT`，包括不同会话/team、已完成、已释放或已取消的记录；更换 requestId 或 session 不能绕过。必须为新派发使用未占用的 instanceId 和 writeRoot。同 requestId/内容/收件人的正常重试仍返回原回执；含声明的请求只允许一个目标，批量任务各自使用独立声明。
+
+检查在入队事务和发送前的 claim 事务内执行。历史积压若已与后来的 fallback 冲突，释放旧 FIFO 队头也不会把它发出去：该消息转 needs_attention，记录 assignment_blocked 事件，收件箱返回 duplicate_assignment 及冲突 messageId；保留原正文和事件，不取消、不重发、不改 campaign 文件。Windows 路径比较归一化大小写、分隔符、点段和末尾分隔符。
+
+声明随 schema 6 升级从仍有正文的旧记录回补，存于独立字段，正文清理后继续保留至原去重记录过期。升级不删除原消息和事件；旧网关不能继续写入新版数据库。保护范围是同一队列库里的显式声明，不是文件系统写隔离：不扫描目录、解析符号链接别名或识别未声明的写入；升级前已清掉正文的声明无法追溯重建。
 
 - 同任务跨队伍共享 FIFO；关联回复读完且原生 completed 后，下一条才发送。先读快照、再刷新原生状态；候选完成时再次读取快照和状态，尾部、消息数及更新时间一致且无待处理输入才给出 completionConfirmed。原生 UI 仍不提供与发送原子绑定的状态锁。
 - 不同任务不等待彼此的模型回复；每轮最多 8 个任务，单连接内快照最多 4 并发，跨工作区依次重连。批量快照失败时，每个受影响任务用新连接和原游标独立核验一次，仍要求完整回复与稳定原生终态；单任务核验再次失败则返回错误，不重试发送。隔离恢复会增加这一轮的读取耗时，但不等待各模型依次完成。
@@ -29,8 +42,9 @@ pause/resume 仍是所有 team 共用的控制，必须明确传 scope:"all" 和
 - 使用同一配置目录/数据库的多个新版插件进程，通过 SQLite 内的顺序票据争用远程连接，不再各自遇锁立即失败。最多 128 个待连接调用，每次等候最多 30 秒，超时尚未开始远程动作；崩溃进程的票据自动回收。模型等待不持有连接。数据库重试仅限本地已回滚的事务，不重试未知发送。不要为同一 Sharing Link 另复制一套独立数据库。
 - 没有单独的 team 数量上限或“一次只运行一个 team”的限制。按 taskId 而非 team 公平轮转：12 个 team 各有一个任务，可以分两轮派发，不用等前 8 个完成。100 条待解决消息是全局容量，不是每个 team 各 100 条。单物理连接的发送请求仍顺序执行；模型回合可重叠，实际模型并发受 ZCode/供应商限制。12 team 为确定性调度测试，不是 12 个实机模型并发验收。
 - queued=持久化；dispatching=进入可能发送阶段；acknowledged=发送获回执；uncertain=回执不明；completed=关联回复读完且原生回合结束，不等于业务验收。
+- workspace 创建在同一消息行中先记 `create_state=pending`；本地 list/bridge 预检失败仍为 queued。创建效果调用前持久写 `started`；此后结果未知或崩溃转 `needs_attention/create_unknown`，绝不自动再建。原生明确拒绝为 `create_failed`，不能伪造任务 ID。创建 ACK 在一个事务中绑定真实 `sess_*`、转 `created/queued`，首发随后才可开始；已绑定而发送尚未开始可重开续发。发送效果开始后结果未知沿用 `uncertain` 和只读 marker 对账，不重放。两种 needs_attention 均保留人工核对与 release 的空间。
 - needs_attention 表示历史缺口、竞争输入、归档或失败终态等，只阻塞该任务的后续发送。
-- 发送回执、inbox 的 envelopes/messages 都提供 `blockedReason`、`blockedByMessageId`、`blockedByState`；`same_task_fifo` 表示被更早的同 task 消息挡住。按新 team 过滤仍能看到另一 team 的阻塞消息 ID/状态，不带其正文；续读即使没有新事件，messages 仍返回当前阻塞信息。这些字段只描述 FIFO，null 不代表已通过原生状态检查或全局冷却。
+- 发送回执、inbox 的 envelopes/messages 都提供 `blockedReason`、`blockedByMessageId`、`blockedByState`；`same_task_fifo` 表示被更早的同 task 消息挡住，`duplicate_assignment` 表示实例/输出目录冲突，`invalid_assignment_declaration` 表示旧声明无法解析。按新 team 过滤仍能看到另一 team 的阻塞消息 ID/状态，不带其正文；续读即使没有新事件，messages 仍返回当前阻塞信息。null 不代表已通过原生状态检查或全局冷却。
 - 队伍仅汇总事件，不自动广播、不执行回复中的指令，不实现任务依赖图。
 
 ## 回传与人工控制
@@ -51,11 +65,13 @@ zcode_control({ action: "stop_task", taskId }); // 请求原生停止，不取�
 
 若停止后不应再发队列消息，先 pause。UI 手工输入仍可能竞争；发送前复查空闲，检测竞争后阻塞，不声称跨 UI 原子互斥。
 队列仍 requested 且未暂停时，release_message/cancel_message 解除队首后会按需唤醒 worker，继续处理既有后续消息；若启动失败，释放结果仍有效，回执附 startupError，使用 resume 恢复。明确 pause 或从未请求启动的队列不会因此启动。释放一个 needs_attention 队首需要使用 release_message，cancel_message 只适用于 queued。
+
+会话重新分派时，`release_message` 也支持已审阅、确认不再执行的 `queued` 旧消息：它们转为 `released`，保留原 messageId、正文、关联信息及事件，仍遵循原有留存策略，不记取消或业务完成（回执 `businessAccepted: false`），也不会重发。先释放已过时的 queued 后续消息，再释放 needs_attention 队首，避免旧任务抢在新指令前执行；已进入 dispatching 的消息不能这样释放。原生 completed 不会自动释放 needs_attention，必须显式核对该消息及排队链。
 默认网关已移除直接发送旁路；旧诊断网关不应参与正常队列操作。
 
 ## 上下文与接收确认
 
-可选 context 随提示词传给 ZCode，也随收件箱的 envelopes 返回。支持 sourceAgent、sourceTaskId、sourceWorkspace、replyTo、goal、background、constraints、expectedReply 和 references。它们是发送方声明，不是认证身份或新增权限；references 是文本引用，不自动读取附件或授予文件访问。
+可选 context 随提示词传给 ZCode，也随收件箱的 envelopes 返回。支持 sourceAgent、sourceTaskId、sourceWorkspace、replyTo、goal、background、constraints、expectedReply、references，以及用于准入的 instanceId、writeRoot。它们是发送方声明，不是认证身份或新增权限；references 是文本引用，不自动读取附件或授予文件访问。
 
 ```javascript
 zcode_send({ requestId: "review-2", taskIds: [taskId], teamId: "review-team",
@@ -81,14 +97,14 @@ envelopes 为版本 1：携带原始请求、来源声明、目标、team、创�
 - 全局最多 500 条完整往返记录；达到条数或字节压力时，按创建顺序清理最旧的“终态且显式确认接收”的提示词、context 与关联事件正文。保留短期消息 ID、请求指纹、回合映射和状态；不删除 ZCode 原生会话。
 - 未发、运行中、结果不明以及完成但未确认的记录不自动清理。全部不可清理时拒绝新入队；回传采集到达容量时暂停 worker，保留旧游标和原状态，不伪造完成、不自动重发。清理空间并 resume 后继续读取；远端历史已缺失则仍报告 historyGap。
 - 清理在入队、采集、接收确认时进行，无额外定时清理进程。过期清理后的旧游标通过全局 retention.throughEvent 保守报告 historyGap，可能包含其他 team 的清理；调用方须明确接受缺口再建立读取基线。
-- 20 MB 指 20,000,000 字节，计入主数据库和事务辅助文件，不含插件代码、外部附件及人工备份。为约束事务期间峰值，主库硬上限约 9 MB，正常写入按约 7 MB 已用页面提前清理/回压；其余为 SQLite 页面、控制更新和回滚日志留余量。因此 500 是条数上限，不保证装得下 500 条长回复；此前按 16 MB 有效数据估算不适用于这一日志也计入的严格预算。
+- 新部署的 Agent Core 共享预算总额为 200,000,000 字节，各 owner allocation 之和必须等于声明总额。显式旧 20,000,000 字节配置仍按原 allocation 读取，不自动改写或重新分配。ZCode 自身 `diskBytes=20,000,000`、`databaseBytes=9,000,000`、`workingBytes=7,000,000` 均未放大，独立于 Core 总额；实际准入取适用限制中更严格者。Core 路径必须先有该 owner 的共享预算分配；每次写事务在 `BEGIN IMMEDIATE` 取得同库跨进程写锁后重查，计入主库、`-journal`、`-wal`、`-shm`，并保守预留页面增长、完整 DELETE journal、扇区余量及后续状态/回执增长。后续增长承诺在锁内由所有非终态 durable messages 重新派生，每条 16 KB，并进入未来主库与回滚日志峰值；completed/released/cancelled 才释放承诺，去重请求不新增承诺。缺少预算、owner 未分配或峰值超额都返回明确字节差额且不新增消息。插件代码、外部附件、人工备份不计入；直接非 Core 路径继续使用本队列内部限制，但不声称占用了 Core 共享预算。因此 500 是条数上限，不保证装得下 500 条长回复。
 - 使用 SQLite DELETE 回滚日志、FULL 同步、关闭 cache spilling、每连接设置 max_page_count，不使用无限增长的 WAL，不运行需要额外整库副本的 VACUUM。删除后空间供后续记录复用，文件不必立即缩小；secure_delete 清除释放页中的正文，但不是针对磁盘备份/底层介质的取证销毁保证。机制依据：[SQLite PRAGMA](https://www.sqlite.org/pragma.html#pragma_max_page_count)、[回滚日志机制](https://www.sqlite.org/lockingv3.html)。
 - 超预算旧库不自动删除或压缩，保留原文件并拒绝迁移。限制覆盖新版插件正常独占管理的数据库；第三方绕过插件写同一文件不在保证范围内。
 
 ## 数据与资源
 
 - 本机 config.json 同目录下的 messages.sqlite 保存提示词、回复和事件，运行时可能有 -journal；默认 CODEX_HOME/zcode-ops/，本机为 E:/Programming/IDE/.codex/zcode-ops/。不进入 Git 或安装包，不开放端口，不搬迁目录。
-- schema 4 在事务中升级旧库，保留消息、事件位置、暂停状态。schema 3 没有按读取者记录的完整交付证明，因此未清理正文的旧确认会撤销，必须重新读完并确认；已经清理的正文不会伪造恢复。旧 worker 正在运行时拒绝迁移，先停止旧 worker。不必关闭 Codex 对话：可在当前任务内从已安装目录启动 `scripts/remote-call.mjs` 使用新版 MCP；但不能同时调用旧版远程锁和新版票据。安装清单与当前内置工具入口版本应分别核对。
+- schema 7 新增并校验稳定的 `queue_owner`；schema 8 在同一消息行增加 workspace 创建状态、真实任务绑定及首发 ID。旧库按既有迁移链保留消息、事件位置、暂停状态与 schema 6 分派声明。schema 3 没有按读取者记录的完整交付证明，因此未清理正文的旧确认会撤销，必须重新读完并确认；已经清理的正文不会伪造恢复。旧 worker 正在运行时拒绝迁移，先停止旧 worker。不必关闭 Codex 对话：可在当前任务内从已安装目录启动 `scripts/remote-call.mjs` 使用新版 MCP；但不能同时调用旧版远程锁和新版票据。安装清单与当前内置工具入口版本应分别核对。
 - 新公开游标是绑定视图和过滤器的不透明字符串；旧内部数字游标不可直接传入，升级后重新读取建立基线。
 - 待解决消息最多 100 条，单次最多 8 个任务，提示词最多 31,000 字符且提示词与 context 合计不超过 40,000 UTF-8 字节；context 不超过 8,000 字节，字段至多 2,048 字符，references 最多 10 项。超长请求明确拒绝，发送方应提供摘要及引用，不静默截断。
 - 每任务每轮正文 3,000 字符；收件箱每页最多 100 事件，事件与关联 envelopes 共用约 64,000 字节预算，单个历史遗留超大事件仍允许完整返回。附带至多 100 条简短状态记录及容量统计；不是完整对话镜像。

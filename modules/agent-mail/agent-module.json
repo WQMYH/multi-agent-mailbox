@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "id": "agent-mail",
+  "name": "Agent Mail",
+  "version": "0.2.0",
+  "entry": "./adapter.mjs",
+  "targets": [
+    { "id": "local-mailbox", "kind": "mailbox", "label": "Explicit local recipients" }
+  ]
+}

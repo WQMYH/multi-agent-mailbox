@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "id": "agent-example",
+  "name": "Example agent module",
+  "version": "0.1.0",
+  "entry": "./adapter.mjs",
+  "targets": [{ "id": "example-desktop", "kind": "desktop", "label": "Example" }]
+}

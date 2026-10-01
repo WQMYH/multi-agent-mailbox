@@ -1,175 +1,104 @@
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-# Codex with ZCode
+# 多智能体信箱 · Multi-Agent Mailbox
 
-**一个 Codex，统筹所有智能体。**
-
-[![CI](https://github.com/WQMYH/Codex-with-Zcode/actions/workflows/ci.yml/badge.svg)](https://github.com/WQMYH/Codex-with-Zcode/actions/workflows/ci.yml)
-[![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
+[![CI](https://github.com/WQMYH/multi-agent-mailbox/actions/workflows/ci.yml/badge.svg)](https://github.com/WQMYH/multi-agent-mailbox/actions/workflows/ci.yml)
+[![Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Node.js 24+](https://img.shields.io/badge/Node.js-24%2B-43853D.svg)](https://nodejs.org/)
 
-让 Codex 成为你的智能体团队指挥台：在一条对话中分派工作、跟进进展、收集结果，并决定下一步。
+让本机智能体通过统一的 **CLI 或 MCP 信箱**可靠传递消息。保留各智能体的模型、原生工具与产品队列；需要会话控制、Hook 或结果收集时，再配置专门化适配插件。
 
-ZCode 是首个接入对象。我们的长期目标，是用统一的任务与消息协作方式，连接不同应用中的智能体。**当前已支持 Codex ↔ ZCode，其他智能体属于后续路线图。**
+这里不是另一套智能体客户端，也不是全局调度器。**每个智能体不必安装专用插件**：能调用 CLI/MCP 即可使用通用信箱。Qoder、ZCode 即使已安装专用适配层，也可选择 mail 通道。
 
-[功能](#功能描述) · [安装](#安装方法) · [使用](#使用说明) · [未来计划](#未来计划) · [参与贡献](#参与贡献)
+## 已有能力
 
-## 为什么做这个项目？
+- 持久化会话地址、联系人发现、显式收件人、关联回复。
+- 只读预览与持久批次获取分开；处理后精确确认，不因读取自动消费。
+- 稳定请求 ID、去重；不自动重放结果不明的外部动作。
+- Core 只有 `agent_discover`、`agent_read`、`agent_act` 三个工具，CLI 对应 `discover/read/act`，模块按需加载。
+- 登记代次、禁用/卸载检查、保留数据的生命周期。
+- 每个真实持久队列 owner 默认 **50,000,000 字节**，可配默认值、单 owner 上限及可选总上限。同队列不因多个插件引用而重复计量；多个智能体共享 mail 数据库时共享该 owner 配额。
+- Qoder 独立版、Qoder CN IDE、ZCode 桌面端的可选适配层。
 
-智能体之间能够交换任务与结果，才能形成协作团队。Codex with ZCode 通过原生任务数据和持久消息队列，让 Codex 协调已有的 ZCode 对话，不需要接管鼠标或键盘。
+## 已测智能体与兼容性
 
-你可以继续使用电脑，让 Codex 查看进展、发送下一条指令，再把结果带回当前对话。各应用保留自己的模型账户和执行环境。
+以下实机范围截至 **2026-10-01**，操作系统为 Windows。产品版本仅记录环境，**不是强制白名单**；先检查能力，在调用失效时再核对更新影响。
 
-## 功能描述
-
-- **掌握全局：**查看已有任务、工作区、原生状态和最新回复。
-- **批量分派：**单次向 1–8 条任务发送指令，不同任务的工作可以重叠进行。
-- **保持顺序：**同一任务共用先进先出队列，跨 team 也不会绕过顺序。
-- **收集回传：**在有容量上限的本地收件箱中保留提示词、回复与投递状态。
-- **选择模型与介入：**读取可用模型、为空闲任务切换模型、暂停投递或请求停止。
-- **从 ZCode 回报 Codex：**可选配套插件向绑定的 Codex 任务发送固定回报。
-
-### 当前支持范围
-
-| 方向 | 插件 | 现有能力 |
+| 智能体 | 通用信箱实测 | 专用适配实测 |
 | --- | --- | --- |
-| Codex → ZCode | `zcode-ops` | 查看、发送、收集回复、选择模型和控制已有任务。 |
-| ZCode → Codex | `zcode-codex-bridge` | 查看一个绑定任务的状态，发送预设回报，支持唤醒未加载的任务。 |
-| Codex → 其他智能体 | 计划中 | 从经过验证的宿主接口出发，建立统一协作流程。 |
+| Codex | Core 发信、收信、关联回复、精确确认 | 三工具 MCP 与同实现 CLI |
+| pi | 原生 mail 工具；pi → Qoder → 同一 pi 会话闭环 | 不需要专用插件 |
+| Qoder CN 独立版 | pi ↔ Qoder 闭环真实收信、回信 | 创建/发送、FIFO、多会话/多轮回传、崩溃后显式恢复 |
+| ZCode CLI | **Codex ↔ 同一原生 CLI 会话**收信、回信、确认，无 Sharing Link | 使用原生命令工具，无需专用 mail 插件 |
+| OpenClaw | 原生 mail 工具与关联回信；DeepSeek 下原生运行成功 | 不需要专用插件 |
+| Qoder CN IDE | 可接入 CLI/MCP，尚未单独声明 IDE 原生 mail 闭环 | 认证窗口命令桥、当前页发送、对应回复/状态、页面切换观察 |
 
-ZCode 配套插件按需安装，目前不支持任意内容回传或双方自动循环执行。两侧插件均不负责新建 ZCode 对话。
+**其他智能体基本具备接口兼容条件**：能运行 Node CLI 或作为 MCP 客户端接入即可。未逐款实测，不将接口兼容当作全部产品认证。需要原生唤醒、会话定位或 Hooks 时可配备最小专门化插件；复用 Core/现有队列，不叠加第二套发送状态机。
 
-## 安装方法
+通用 mail 是**拉取型信箱，不自动唤醒产品**。ZCode 无 link 测试是新原生 CLI 会话和显式接续；`agent-zcode` 对**桌面已有会话**的控制仍需 Sharing Link。两条通道分别标注。
 
-### 环境要求
+## 最小安装：只用信箱
 
-- **Windows**，已安装 Codex Desktop 与 ZCode Desktop。已验证 ZCode 3.11.2；其他系统与宿主版本尚未验证。
-- **Node.js 24+**，桌面应用可通过 `PATH` 找到。
-- **Git**，以及支持 `codex plugin marketplace add` 的 Codex CLI。
-- 能访问 GitHub；连接时需要 ZCode 提供 **Mobile Remote Control** 功能。
-
-正常安装直接读取 GitHub 仓库，不需要手动克隆源码、构建压缩包、发布到 npm 或下载 GitHub Release。两侧插件的正常入口均使用 Node.js 内置模块，不依赖旧 ACP 诊断所需的依赖包。
-
-### 在 Codex 中安装
-
-执行：
+需要 **Node.js 24+**、本地文件系统及同一操作系统用户。Core/mail 不要求安装 Qoder、ZCode、Codex 桌面端，也不依赖 npm 包。
 
 ```powershell
-codex plugin marketplace add WQMYH/Codex-with-Zcode
-codex plugin add zcode-ops@codex-with-zcode
+git clone https://github.com/WQMYH/multi-agent-mailbox.git
+cd multi-agent-mailbox
+node modules/agent-core/src/cli.mjs install modules/agent-mail
+node --input-type=module -e "import {queueOwnerId} from './modules/agent-mail/adapter.mjs'; console.log(JSON.stringify({ownerIds:[queueOwnerId()]}));" | node modules/agent-core/src/cli.mjs budget sync
 ```
 
-随后在 Codex 插件设置中确认 **ZCode Ops** 已启用。
+安装和配额同步由操作者明确执行，邮件本身不能安装代码或扩大配额；保留原有配额/数据，登记后请保留模块路径。
 
-Codex 会读取仓库中的[市场清单](.agents/plugins/marketplace.json)，定位根目录的插件。Git 市场内部的本地相对路径指向下载下来的仓库，并不要求用户手动克隆。参见[官方 GitHub 市场文档](https://learn.chatgpt.com/docs/enterprise/plugin-management)。
+向智能体提供 Core CLI 路径，或使用其原生 MCP 配置启动：
 
-### 可选：在 ZCode 中安装
+```text
+node /absolute/path/to/multi-agent-mailbox/modules/agent-core/src/mcp-server.mjs
+```
 
-1. 在 ZCode 打开一个工作区。
-2. 进入 **设置 → 插件 → 创建 → 添加插件市场**。
-3. 输入 `WQMYH/Codex-with-Zcode`，或本仓库的 GitHub 地址。
-4. 从 **codex-with-zcode** 安装 **zcode-codex-bridge**。
-
-ZCode 读取根目录的 [marketplace.json](marketplace.json)，与 Codex 使用不同的市场清单，但二者位于同一仓库。[ZCode 官方插件指南](https://zcode.z.ai/cn/docs/plugin)说明了 GitHub 市场安装方式。
-
-随后按照[配套插件绑定指南](zcode-codex-bridge/README.zh-CN.md#安装与绑定)，指定目标 Codex 任务、工作目录，并配置有时效的桌面宿主绑定。
-
-### 连接 ZCode
-
-1. 在 ZCode 打开 **Mobile Remote Control**，复制当前 **Sharing Link**。
-2. 将链接交给 Codex，告诉它：“为 ZCode Ops 保存这个连接。”
-3. 发送：“列出我未归档的 ZCode 任务及当前状态。”
-
-链接保存在源码目录之外的 `CODEX_HOME/zcode-ops/config.json`；未设置 `CODEX_HOME` 时使用 `~/.codex/zcode-ops/config.json`。启动 Codex 时不会弹出链接输入窗口。配置有效仅表示本地检查通过，不代表远端可达。
-
-## 使用说明
-
-直接使用自然语言即可：
-
-> 查看这个项目中的 ZCode 任务。让选中的三个任务汇报进展，然后收集它们的回复。
-
-> 查看这条任务的可用模型，等它空闲后切换为我选定的模型，再发送下一条指令。
-
-> 暂停消息投递。先读取受影响的任务，再决定是否停止当前回合。
-
-Codex 通过 8 个工具完成这些操作：
-
-| 工具 | 用途 |
-| --- | --- |
-| `zcode_tasks` | 列出任务、工作区和原生状态。 |
-| `zcode_read` | 读取对话或收件箱，使用游标续读或等待。 |
-| `zcode_send` | 向一条或多条已有任务入队发送提示词。 |
-| `zcode_control` | 暂停/恢复投递、管理回执，或请求停止。 |
-| `zcode_models` | 读取任务提供的模型清单。 |
-| `zcode_set_model` | 为空闲任务选择清单中的模型。 |
-| `zcode_config_status` | 检查已保存配置，不暴露链接。 |
-| `zcode_config_set` | 保存或清除 Sharing Link。 |
-
-自动化调用中，同一次发送重试应沿用原 `requestId`。队列后台独立采集回复，Codex 通过 `zcode_read` 读取；持续监督需要另行配置定时任务，安装本身不会监控所有对话。
-
-参数、team、游标、接收确认和恢复方式见[队列指南](docs/message-queue.md)。
-
-## 可靠性与隐私
-
-- **投递不等于验收。**原生 `completed` 表示回合结束，不代表工作通过审阅。
-- **未知发送不重放。**恢复前先读取对话，不要为了重发而更换请求 ID。
-- **确认限流后由后台重试。**插件内部至少等待 300 秒，每条消息最多重试 5 次（含首次共 6 次）；收到回复或重启不清零。所有 team 共享冷却并错峰恢复，读取继续。耗尽次数后收件箱产生 `temporarily_blocked`，仅阻塞该任务的 FIFO 队首；不会主动唤醒未运行的 Codex 任务。
-- **次数属于消息，不属于对话。**成功完成后停止重发并保留历史计数，新消息额度独立。冷却期间出现外部新输入时结束旧重试，不阻塞后续已授权消息。
-- **隔离读取故障。**批量读取失败时，每个受影响任务使用新连接独立核验一次，保留原游标与完成检查；绝不因此重试发送。
-- **限制资源占用。**所有 team 共用一个队列和远程连接，最多 100 条未解决消息、500 条完整记录，数据库及事务日志总预算为 20 MB。
-- **暂停影响全局。**暂停投递作用于所有 team；停止某个模型回合不会取消其后续排队消息。
-- **凭据保留在本地。**Sharing Link、桌面宿主绑定和收件箱可能暴露任务内容，不要放入公开 Issue、截图或 Git 提交。
-
-模型并发能力取决于 ZCode 和服务商。远程读写共用一条连接，不承诺无限并行执行。插件沿用目标应用的既有账户与权限，不提供模型额度。
-
-这是独立社区项目，并非 OpenAI 或 Z.ai 官方产品。桌面接口可能随宿主更新而变化。
-
-## 常见问题
-
-| 问题 | 处理方式 |
-| --- | --- |
-| 插件无法启动 | 确认 `node --version` 为 24+，且桌面应用的 `PATH` 可找到 Node；更改环境后重启应用。 |
-| 找不到市场或插件 | 检查 GitHub 访问并刷新市场，确认添加的是仓库地址，而非插件子目录。 |
-| 无法连接 ZCode | 保持 ZCode 与 Mobile Remote Control 开启，检查网络；必要时提供当前 Sharing Link。 |
-| 消息一直排队 | 检查暂停状态、待处理输入，以及前一条消息的投递状态。 |
-| 原生任务完成，收件箱未完成 | 更新插件并核对两个视图；独立读取仍失败时，保留消息 ID 并提交脱敏诊断，不要重发。 |
-| 重启 Codex 后配套插件失效 | 重新创建有时效的桌面宿主绑定。 |
-
-## 开发
-
-本地开发时执行：
+默认 registry 是 `~/.codex-agent-core/registry.json`。若另选登记文件，CLI 的 `--registry` 与 MCP 的 `AGENT_CORE_REGISTRY` 应指向同一绝对路径；`AGENT_MAIL_DB_PATH` 单独选择 mail 数据库，**换 registry 不等于换数据库**。
 
 ```powershell
-git clone https://github.com/WQMYH/Codex-with-Zcode.git
-cd Codex-with-Zcode
-npm ci --ignore-scripts
-npm run smoke
-npm --prefix zcode-codex-bridge/plugin test
+'{"moduleId":"agent-mail"}' | node modules/agent-core/src/cli.mjs discover
+'{"moduleId":"agent-mail","operation":"register","args":{"requestId":"my-stable-session-id","label":"my-agent"}}' | node modules/agent-core/src/cli.mjs act
 ```
 
-两侧市场也都接受本地源码目录，便于开发调试。Codex 与 ZCode 会缓存已安装插件：修改后需刷新来源、更新或重装插件。只更新 Git，不会替换已运行的后台进程。
+保留返回的 `ownerId`、`target`、`consumers`；通过 `contacts` 选择精确地址，`send` 投递/回信，`inbox` 预览，`confirm_and_fetch` 获取/确认批次。对账复用原请求 ID，新消息使用新 ID。[完整协议](modules/agent-mail/README.md)。
 
-[CI](.github/workflows/ci.yml) 在 push 和 pull request 时，通过 Windows / Node.js 24 运行已有离线测试。测试使用临时数据和模拟连接，不需要账户、Sharing Link 或模型额度；桌面端到端验证另行进行。
+## 按需安装原生适配
 
-进一步了解：[队列契约](docs/message-queue.md) · [协议证据](docs/zcode-remote-protocol.md) · [配套插件指南](zcode-codex-bridge/README.zh-CN.md) · [配套插件测试记录](zcode-codex-bridge/TEST-RESULTS.md)
+| 组件 | 用途 | 文档 |
+| --- | --- | --- |
+| `agent-core` | 公共 CLI/MCP、生命周期 | [Core](modules/agent-core/README.md) |
+| `agent-mail` | 通用信箱 | [Mail](modules/agent-mail/README.md) |
+| `agent-qoder` | 独立版控制与产品队列 | [Qoder](modules/agent-qoder/README.md) |
+| `qoder-codex-bridge` | Qoder Hook、结果归属、回传 Codex | [回传](qoder-codex-bridge/README.md) |
+| `agent-qoder-ide` + `qoder-ide-bridge` | 认证窗口、命令和当前页交互 | [IDE](qoder-ide-bridge/README.md) |
+| `agent-zcode` | ZCode 桌面端原生远程控制 | [ZCode](modules/agent-zcode/README.md) |
+| `zcode-codex-bridge` | ZCode → 固定 Codex 目标状态/通知 | [回传](zcode-codex-bridge/README.zh-CN.md) |
 
-## 未来计划
+Codex 原生插件入口：
 
-- [x] 从 Codex 协调已有 ZCode 任务。
-- [x] 持久队列、批量派发、有界保留与完成采集。
-- [x] ZCode 配套插件向绑定的 Codex 任务回报。
-- [ ] 更丰富的 ZCode → Codex 消息与更简单的绑定方式。
-- [ ] 事件驱动通知和更多桌面版本的兼容验证。
-- [ ] 接入更多智能体，让一个 Codex 协调跨应用团队。
+```powershell
+codex plugin marketplace add WQMYH/multi-agent-mailbox
+codex plugin add agent-core@codex-with-zcode
+```
 
-更多智能体支持是发展方向，不是当前兼容性承诺。尤其欢迎带来可验证宿主接口的贡献。
+仓库/显示名称已更名，marketplace ID `codex-with-zcode` 与组件 ID 保留兼容。旧独立 `zcode-ops` 不再是默认入口；改用 Core 与对应模块，**不降级/清空旧队列、不盲目重放未知请求**。旧源码保留供历史/迁移使用。
 
-## 参与贡献
+## 发布与测试
 
-项目由 [WQMYH](https://github.com/WQMYH) 维护，欢迎提交 [Issue](https://github.com/WQMYH/Codex-with-Zcode/issues) 和 Pull Request。
+可克隆源码或下载 [GitHub Release](https://github.com/WQMYH/multi-agent-mailbox/releases)。附件提供源码、Core/mail 包、可选回传 ZIP、IDE VSIX 和 SHA-256 校验文件。
 
-报告问题时，请提供插件提交号、桌面版本、复现步骤及脱敏诊断。提交修改时保持范围集中，并运行两侧测试。请勿提交凭据或私密对话内容。
+```powershell
+npm ci --ignore-scripts --no-audit --no-fund
+npm test
+```
 
-## 许可证
+测试从 `scripts/` 构建 ZCode runtime，独立进程顺序运行公开离线测试；不会重跑付费模型实验。CI 使用同一入口。根 lockfile 的依赖留给旧 ACP 诊断，新 Core/mail 不需要它们。
 
-采用 [Apache License 2.0](LICENSE)。第三方来源与许可保留在 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+[验收范围](docs/compatibility.md) · [发行说明](docs/releases/v0.2.0.md) · [贡献指南](CONTRIBUTING.md) · [安全边界](SECURITY.md)
+
+首版是**同机、同操作系统用户**的信息传递。模块、registry 与 CLI 执行是受信任本机代码；邮件来源标签不是人类授权，收信不等于获准执行敏感动作。令牌、binding、Sharing Link、数据库和日志留在本机。跨电脑认证/网络服务与自动唤醒不在本版范围；源码、安装、原生执行、消费确认、业务完成分别记录。
+
+[Apache-2.0](LICENSE) · [第三方材料](THIRD_PARTY_NOTICES.md)。

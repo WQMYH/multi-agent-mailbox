@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "agent-core": {
+      "command": "node",
+      "args": ["./src/mcp-server.mjs"],
+      "cwd": ".",
+      "enabled": true,
+      "startup_timeout_sec": 30,
+      "tool_timeout_sec": 120,
+      "default_tools_approval_mode": "prompt",
+      "tools": {
+        "agent_discover": { "approval_mode": "auto" },
+        "agent_read": { "approval_mode": "auto" },
+        "agent_act": { "approval_mode": "prompt" }
+      }
+    }
+  }
+}

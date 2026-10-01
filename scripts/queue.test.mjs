@@ -167,6 +167,19 @@ try {
   assert.equal(Object.hasOwn(pagedView.envelopes[0], "nativeExecutionFailure"), false);
   queue.db.prepare("UPDATE worker SET desired=0").run();
   await tick(queue, token, connect); assert.equal(sent.length, 3);
+  // A transient failure on a single-task group also gets one fresh connection.
+  let singleReads = 0; const singleOpened = [];
+  const singleRecovery = await readMany({ taskIds: ["sess_single"] }, action => action({
+    list: async () => ({ tasks: [{ ...tasks[0], taskId: "sess_single", workspacePath: "one" }] }),
+    open: async task => singleOpened.push(task.workspacePath),
+    snapshot: async () => {
+      if (++singleReads === 1) throw Error("transient snapshot failure");
+      return { messages: [] };
+    }
+  }));
+  assert.equal(singleRecovery.tasks.length, 1, "Retry an isolated read even for one task");
+  assert.equal(singleRecovery.errors.length, 0);
+  assert.deepEqual(singleOpened, ["one", "one"]);
   // Bounded snapshot concurrency and workspace barrier, including one target error.
   let active = 0, peak = 0; const opened = [];
   const manyTasks = Array.from({ length: 8 }, (_, i) => ({ ...tasks[0], taskId: `sess_${i}`, workspacePath: i < 6 ? "one" : "two" }));

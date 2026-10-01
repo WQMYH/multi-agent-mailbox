@@ -1,0 +1,34 @@
+{
+  "description": "Qoder CN lifecycle capture. Each event pipes its JSON stdin into the shared command handler, which records a metadata-only receipt and notifies the bound Codex task with a fixed template.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|clear|compact",
+        "hooks": [
+          { "type": "command", "command": "node \"${QODER_PLUGIN_ROOT}/hooks/handler.mjs\"", "timeout": 5 }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          { "type": "command", "command": "node \"${QODER_PLUGIN_ROOT}/hooks/handler.mjs\"", "timeout": 5 }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          { "type": "command", "command": "node \"${QODER_PLUGIN_ROOT}/hooks/handler.mjs\"", "timeout": 5 }
+        ]
+      }
+    ],
+    "StopFailure": [
+      {
+        "hooks": [
+          { "type": "command", "command": "node \"${QODER_PLUGIN_ROOT}/hooks/handler.mjs\"", "timeout": 5 }
+        ]
+      }
+    ]
+  }
+}

@@ -1,12 +1,12 @@
 {
   "name": "codex-with-zcode",
-  "description": "One Codex to orchestrate every agent, starting with ZCode.",
+  "description": "Multi-Agent Mailbox optional ZCode companion. Marketplace IDs remain compatible with existing installations.",
   "plugins": [
     {
       "name": "zcode-codex-bridge",
       "source": "./zcode-codex-bridge/plugin",
       "description": "Return a bounded report from ZCode to a bound Codex task.",
-      "version": "0.2.4",
+      "version": "0.3.1",
       "category": "developer-tools",
       "strict": true
     }

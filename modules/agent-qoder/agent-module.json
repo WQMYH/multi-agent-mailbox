@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "id": "agent-qoder",
+  "name": "Qoder CN standalone (experimental)",
+  "version": "0.1.0",
+  "entry": "./adapter.mjs",
+  "targets": [{"id":"qoder-cn-desktop","kind":"desktop","label":"Qoder CN standalone"}]
+}

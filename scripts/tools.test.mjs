@@ -19,6 +19,8 @@ for (const taskIds of [["sess_a"], ["sess_a", "sess_b"]]) {
   await callPublicTool("zcode_send", { requestId: "id", taskIds, prompt: "你好" }, deps);
   assert.equal(calls.at(-1).name, "zcode_queue_send");
 }
+await callPublicTool("zcode_send", { requestId: "new-task", workspace: { path: "test-workspace" }, prompt: "你好" }, deps);
+assert.equal(calls.at(-1).name, "zcode_queue_send");
 const page = await callPublicTool("zcode_read", { taskIds: ["sess_b", "sess_a"] }, deps);
 await callPublicTool("zcode_read", { taskIds: ["sess_a", "sess_b"], cursor: page.cursor, waitMs: 10 }, deps);
 assert.equal(calls.at(-1).name, "zcode_remote_wait_many");
@@ -46,7 +48,12 @@ await callPublicTool("zcode_control", { action: "cancel_message", messageId: "x"
 assert.equal(calls.at(-1).args.decision, "cancel");
 await callPublicTool("zcode_config_set", { sharingLink: null }, deps); assert.equal(calls.at(-1).name, "zcode_config_clear");
 for (const args of [{ prompt: "x" }, { requestId: "r", taskIds: ["bad"], prompt: "x" },
-  { requestId: "r", taskIds: ["sess_a", "sess_a"], prompt: "x" }]) await assert.rejects(callPublicTool("zcode_send", args, deps));
+  { requestId: "r", taskIds: ["sess_a", "sess_a"], prompt: "x" },
+  { requestId: "r", taskIds: ["sess_a"], workspace: { path: "test-workspace" }, prompt: "x" },
+  { requestId: "r", workspace: [{ path: "test-workspace" }], prompt: "x" },
+  { requestId: "r", workspace: { path: "test-workspace", extra: true }, prompt: "x" },
+  { requestId: "r", workspace: { path: "test-workspace" }, prompt: "" }])
+  await assert.rejects(callPublicTool("zcode_send", args, deps));
 
 const dir = mkdtempSync(join(tmpdir(), "zcode-public-test-"));
 const original = process.env.ZCODE_OPS_CONFIG;
@@ -79,7 +86,8 @@ try {
   old.exec("ALTER TABLE worker DROP COLUMN paused; PRAGMA user_version=0"); old.close();
   q = new MessageQueue(join(dir, "old.sqlite"));
   assert.deepEqual(q.read().events, before.events); assert.deepEqual(q.read().messages, before.messages);
-  assert(q.read().worker.paused); assert.equal(q.db.prepare("PRAGMA user_version").get().user_version, 5);
+  assert(q.read().worker.paused); assert.equal(q.db.prepare("PRAGMA user_version").get().user_version, 9);
+  assert.equal(q.db.prepare("SELECT target_kind FROM messages WHERE request_id='old'").get().target_kind, "task");
   await startWorker(q, { launch }); assert.equal(launches, 2, "Old stopped worker stays paused after migration");
   q.close(); q = new MessageQueue(join(dir, "old.sqlite")); assert(q.worker().paused); q.close(); q = null;
   const future = new DatabaseSync(join(dir, "future.sqlite")); future.exec("PRAGMA user_version=99"); future.close();

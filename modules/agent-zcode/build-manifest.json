@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "moduleId": "agent-zcode",
+  "source": "scripts/",
+  "runtimeFiles": [
+    "config.mjs",
+    "message-queue.mjs",
+    "queue-budget.mjs",
+    "queue-worker.mjs",
+    "remote-client.mjs",
+    "remote-codec.mjs",
+    "remote-messages.mjs",
+    "remote-tools.mjs",
+    "tools.mjs",
+    "core-contracts.mjs"
+  ],
+  "sharedSources": {
+    "core-contracts.mjs": "modules/agent-core/src/contracts.mjs"
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "id": "agent-qoder-ide",
+  "name": "Qoder CN IDE (experimental)",
+  "version": "0.2.0",
+  "entry": "./adapter.mjs",
+  "targets": [{ "id": "qoder-cn-ide", "kind": "desktop", "label": "Qoder CN IDE" }]
+}

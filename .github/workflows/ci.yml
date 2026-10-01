@@ -10,7 +10,7 @@ permissions:
 jobs:
   test:
     runs-on: windows-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
         with:
@@ -20,8 +20,5 @@ jobs:
           node-version: '24'
       - name: Install dependencies
         run: npm ci --ignore-scripts --no-audit --no-fund
-      - name: Test Codex plugin
-        run: npm run smoke
-      - name: Test ZCode plugin
+      - name: Build and test all public modules and companions (offline)
         run: npm test
-        working-directory: zcode-codex-bridge/plugin
