@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -68,7 +68,7 @@ test('permission-first persists owner identity, rejects a hard-link alias and ro
   try {
     assert.deepEqual(db.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all().map(row => row.name), ['queue_meta']);
     assert.deepEqual({ ...db.prepare('SELECT owner_id,queue_path FROM queue_meta').get() }, {
-      owner_id: queueOwnerId(first), queue_path: firstPath.replaceAll('\\', '/').toLowerCase()
+      owner_id: queueOwnerId(first), queue_path: realpathSync(firstPath).replaceAll('\\', '/').toLowerCase()
     });
   } finally { db.close(); }
 

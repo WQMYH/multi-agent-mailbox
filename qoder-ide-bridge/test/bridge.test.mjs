@@ -1,7 +1,7 @@
 import { strict as assert } from "node:assert";
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,7 +13,7 @@ const { startBridge } = require("../extension/extension.cjs");
 const { collect } = require("../extension/hook-collector.cjs");
 const { claimMutation, ownerIdForStateDir, readMessage, reserveMessage } = require("../extension/message-store.cjs");
 const here = dirname(fileURLToPath(import.meta.url));
-const root = mkdtempSync(join(tmpdir(), "qoder-ide-bridge-test-"));
+const root = realpathSync(mkdtempSync(join(tmpdir(), "qoder-ide-bridge-test-")));
 const workspace = join(root, "workspace");
 const addedWorkspace = join(root, "added-workspace");
 const fixture = join(workspace, "fixture-mod");

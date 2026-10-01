@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
 import { existsSync, statSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { call, describe } from './adapter.mjs';
 import { claimWorker, desktop, queueOwnerId } from './desktop.mjs';
 import { checkMessageBudget } from '../agent-core/src/contracts.mjs';
@@ -13,7 +14,7 @@ const workspaceId='22222222-2222-4222-8222-222222222222';
 const turnId='33333333-3333-4333-8333-333333333333';
 
 async function fixture(run){
-  const directory=await mkdtemp(fileURLToPath(new URL('./work/interactions-test-',import.meta.url)));
+  const directory=await mkdtemp(join(tmpdir(),'qoder-interactions-test-'));
   const keys=['USERPROFILE','HOME','QODER_DESKTOP_CDP_PORT','QODER_CONTROL_WORKSPACE_ID','QODER_CONTROL_ROOT','QODER_DELIVERY_DIR'];
   const env=Object.fromEntries(keys.map(k=>[k,process.env[k]]));
   const globals={fetch,WebSocket,setTimeout};

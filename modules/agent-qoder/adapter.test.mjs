@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { describe,call } from './adapter.mjs';
 import { queueOwnerId } from './desktop.mjs';
 import { ModuleRegistry } from '../agent-core/src/registry.mjs';
@@ -15,7 +16,7 @@ test('domain boundaries and durable uncertain-send reservation, no live calls',a
   for(const args of [{constructor:'extra'},JSON.parse('{"__proto__":{"extra":true}}')])await assert.rejects(call('identity',args),/Unknown argument/);
   const names=['QODER_DESKTOP_CDP_PORT','QODER_CONTROL_WORKSPACE_ID','QODER_CONTROL_ROOT','QODER_DELIVERY_DIR','USERPROFILE','HOME'];
   const saved=Object.fromEntries(names.map(k=>[k,process.env[k]]));
-  const directory=await mkdtemp(fileURLToPath(new URL('./work/delivery-test-',import.meta.url)));
+  const directory=await mkdtemp(join(tmpdir(),'qoder-delivery-test-'));
   try{
     process.env.USERPROFILE=directory;process.env.HOME=directory;
     delete process.env.QODER_DESKTOP_CDP_PORT;
@@ -52,7 +53,7 @@ test('domain boundaries and durable uncertain-send reservation, no live calls',a
 });
 
 test('v1 core discovers the real module and enforces read/write separation in an isolated registry',async()=>{
-  const directory=await mkdtemp(fileURLToPath(new URL('./work/registry-test-',import.meta.url)));
+  const directory=await mkdtemp(join(tmpdir(),'qoder-registry-test-'));
   try{
     const registry=new ModuleRegistry({registryPath:join(directory,'registry.json')});
     registry.install(fileURLToPath(new URL('.',import.meta.url)));

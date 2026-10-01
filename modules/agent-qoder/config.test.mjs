@@ -3,11 +3,11 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { tmpdir } from 'node:os';
 import { readOperatorConfig } from './config.mjs';
 
 test('operator JSON validates strictly, overlays environment, and rereads without mutating inputs', () => {
-  const root=mkdtempSync(fileURLToPath(new URL('./work/config-test-',import.meta.url))), file=join(root,'config.json');
+  const root=mkdtempSync(join(tmpdir(),'qoder-config-test-')), file=join(root,'config.json');
   const good={cdpPort:19327,workspaceId:'11111111-1111-1111-1111-111111111111',root,deliveryDir:join(root,'delivery')};
   try {
     assert.deepEqual(readOperatorConfig({},file),{});assert.equal(existsSync(file),false);
@@ -33,7 +33,7 @@ test('operator JSON validates strictly, overlays environment, and rereads withou
 });
 
 test('default-path file routes real adapter without QODER env, hot reads stay isolated in concurrent calls', () => {
-  const home=mkdtempSync(fileURLToPath(new URL('./work/config-host-test-',import.meta.url)));
+  const home=mkdtempSync(join(tmpdir(),'qoder-config-host-test-'));
   const env={...process.env,USERPROFILE:home,HOME:home};
   for(const key of Object.keys(env))if(key.startsWith('QODER_'))delete env[key];
   mkdirSync(join(home,'.codex-agent-core'));
