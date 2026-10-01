@@ -68,7 +68,7 @@ test('permission-first persists owner identity, rejects a hard-link alias and ro
   try {
     assert.deepEqual(db.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all().map(row => row.name), ['queue_meta']);
     assert.deepEqual({ ...db.prepare('SELECT owner_id,queue_path FROM queue_meta').get() }, {
-      owner_id: queueOwnerId(first), queue_path: realpathSync(firstPath).replaceAll('\\', '/').toLowerCase()
+      owner_id: queueOwnerId(first), queue_path: realpathSync.native(firstPath).replaceAll('\\', '/').toLowerCase()
     });
   } finally { db.close(); }
 
