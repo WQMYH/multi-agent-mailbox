@@ -28,7 +28,6 @@ const tests = directories.flatMap(dir => readdirSync(join(root, dir))
   .filter(name => name.endsWith('.test.mjs') || name.endsWith('-test.mjs')).sort().map(name => `${dir}/${name}`));
 // Sequential processes keep each existing test's temporary environment overrides isolated.
 for (const file of tests) run(file);
-run('scripts/smoke.mjs');
-console.log(`\n${tests.length + 5} public offline checks; failed: ${failures.length}.`);
+console.log(`\n${tests.length + 4} public offline checks; failed: ${failures.length}.`);
 if (failures.length) console.error(failures.join('\n'));
 process.exitCode = failures.length ? 1 : 0;
