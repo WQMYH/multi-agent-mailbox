@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { cp, copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -164,8 +164,9 @@ async function copiedWorkerBudget(totalBytes, allocationTotal, accepted, { adapt
   const registryPath = join(root, 'registry.json');
   await mkdir(install); await mkdir(deliveryDir);
   try {
-    for (const name of ['desktop.mjs', 'worker.mjs'])
+    for (const name of ['desktop.mjs', 'desktop-history.mjs', 'native.mjs', 'native-failure.mjs', 'worker.mjs'])
       await copyFile(new URL(name, import.meta.url), join(install, name));
+    await cp(new URL('runtime', import.meta.url), join(install, 'runtime'), { recursive: true });
     const config = { cdpPort: 19327, workspaceId: 'workspace', root: 'E:/owned', deliveryDir };
     new DatabaseSync(join(deliveryDir, 'send-queue.sqlite')).close();
     const ownerId = queueOwnerId(config), registrationId = 'registration', revision = 'revision';

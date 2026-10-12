@@ -1,0 +1,7 @@
+{
+  "cliExecutable": "C:/Example/.qoderwake-cn/bin/qoderwake-cn.exe",
+  "home": "C:/Example/.qoderwake-cn",
+  "allowedWakerIds": ["replace-with-an-exact-local-agentId"],
+  "allowedRoots": ["E:/replace-with-an-authorized-project-directory"],
+  "receiptDir": "E:/replace-with-an-adapter-receipt-directory"
+}

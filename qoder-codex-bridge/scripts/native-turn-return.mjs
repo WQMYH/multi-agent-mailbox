@@ -1,6 +1,6 @@
-import { realpathSync } from "node:fs";
-import { isAbsolute, normalize, resolve } from "node:path";
-import { loadBindings, loadNativeBinding, receiptFilename, recordEvent } from "./event-recorder.mjs";
+import { readFileSync, realpathSync } from "node:fs";
+import { isAbsolute, join, normalize, resolve } from "node:path";
+import { loadBindings, loadNativeBinding, receiptFilename, recordEvent, validReceiptShape } from "./event-recorder.mjs";
 import { sendNotification } from "./host-notifier.mjs";
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/;
@@ -54,6 +54,20 @@ function eventOf(binding, fact, cwd) {
   return event;
 }
 
+// Valid delivered history is immutable work, not another provider observation/send.
+function acceptedReturn(dataDir, binding, scope, cwd) {
+  try {
+    const record = JSON.parse(readFileSync(join(dataDir, receiptFilename({ requestId: binding.requestId, signal: "verified_turn_result" })), "utf8"));
+    if (!validReceiptShape(record) || record.sendState !== "accepted" || record.event.signal !== "verified_turn_result") return false;
+    if (!["requestId", "workspaceId", "sessionId", "hookSessionId", "cwd", "targetTaskId", "targetCwd"]
+      .every(key => record.identity[key] === binding[key])) return false;
+    if (!verifiedFact({ ...record.event.data, requestId: record.event.requestId,
+      workspaceId: record.event.workspaceId, sessionId: record.event.sessionId }, binding, scope, cwd)) return false;
+    const current = loadNativeBinding(dataDir, binding.requestId);
+    return BINDING_IDENTITY.every(key => current[key] === binding[key]);
+  } catch { return false; } // Unreadable/conflicting records retain the normal fail-closed path.
+}
+
 // Internal provider integration only. observeTurn is responsible for verifying native
 // history and finality; a model-supplied JSON "verified" flag has no standing here.
 export async function reconcileVerifiedReturns({ dataDir, scope, observeTurn, assertActive }) {
@@ -73,14 +87,15 @@ export async function reconcileVerifiedReturns({ dataDir, scope, observeTurn, as
   const candidates = [];
   for (const binding of bindings) {
     if (binding.returnMode !== "native_turn" || binding.ownerId !== scope.ownerId
-        || binding.workspaceId !== scope.workspaceId || Date.parse(binding.expiresAt) <= Date.now()) continue;
-    try { if (canonical(binding.cwd) === cwd) candidates.push({ binding }); }
+        || binding.workspaceId !== scope.workspaceId || (binding.expiresAt !== undefined && Date.parse(binding.expiresAt) <= Date.now())) continue;
+    try { if (canonical(binding.cwd) === cwd) candidates.push({ binding, accepted: acceptedReturn(dataDir, binding, scope, cwd) }); }
     catch { candidates.push({ binding, pathUnavailable: true }); }
   }
-  if (candidates.length > MAX_NATIVE_BINDINGS) throw Error("Native turn binding scope exceeds one bounded reconcile pass");
+  if (candidates.filter(candidate => !candidate.accepted).length > MAX_NATIVE_BINDINGS) throw Error("Native turn binding scope exceeds one bounded reconcile pass");
   const results = [];
-  for (const { binding, pathUnavailable } of candidates) {
+  for (const { binding, pathUnavailable, accepted } of candidates) {
     await active();
+    if (accepted) { results.push({ requestId: binding.requestId, state: "accepted" }); continue; }
     if (pathUnavailable) { results.push({ requestId: binding.requestId, state: "binding_path_unavailable" }); continue; }
     let fact;
     try { fact = await observeTurn({ requestId: binding.requestId, deliveryId: binding.deliveryId, sessionId: binding.sessionId }); }

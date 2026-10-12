@@ -12,15 +12,22 @@ test('operator JSON validates strictly, overlays environment, and rereads withou
   try {
     assert.deepEqual(readOperatorConfig({},file),{});assert.equal(existsSync(file),false);
     writeFileSync(file,JSON.stringify(good));assert.deepEqual(readOperatorConfig({},file),good);
+    const native={...good,cliExecutable:join(root,'qoderclicn.exe')};
+    writeFileSync(file,JSON.stringify(native));assert.deepEqual(readOperatorConfig({},file),native);
+    assert.equal(readOperatorConfig({QODER_CLI_EXECUTABLE:join(root,'other.exe')},file).cliExecutable,join(root,'other.exe'));
     const bridged={...good,returnModulePath:join(root,'native-turn-return.mjs'),returnDataDir:join(root,'return')};
     writeFileSync(file,JSON.stringify(bridged));assert.deepEqual(readOperatorConfig({},file),bridged);
+    const projected={...good,desktopDatabasePath:join(root,'main.sqlite'),desktopArchivePath:join(root,'app.asar')};
+    writeFileSync(file,JSON.stringify(projected));assert.deepEqual(readOperatorConfig({},file),projected);
     writeFileSync(file,JSON.stringify(good));
     const env={QODER_DESKTOP_CDP_PORT:'19328',QODER_CONTROL_WORKSPACE_ID:'22222222-2222-2222-2222-222222222222',QODER_CONTROL_ROOT:join(root,'other'),QODER_DELIVERY_DIR:join(root,'other-delivery')}, before={...env};
     const first=readOperatorConfig(env,file);assert.deepEqual(first,{cdpPort:19328,workspaceId:env.QODER_CONTROL_WORKSPACE_ID,root:env.QODER_CONTROL_ROOT,deliveryDir:env.QODER_DELIVERY_DIR});assert.deepEqual(env,before);
     writeFileSync(file,JSON.stringify({...good,cdpPort:19329}));assert.equal(readOperatorConfig({},file).cdpPort,19329);assert.equal(first.cdpPort,19328);
     for(const bad of [null,[],{extra:true},{cdpPort:0},{cdpPort:65536},{cdpPort:'19327'},{cdpPort:1.5},{workspaceId:'bad'},{root:'relative'},{deliveryDir:'C:relative'},{root:'bad\0path'},
       {...good,returnModulePath:join(root,'native-turn-return.mjs')},{...good,returnDataDir:join(root,'return')},
-      {...good,returnModulePath:'relative',returnDataDir:join(root,'return')}]) {
+      {...good,returnModulePath:'relative',returnDataDir:join(root,'return')},{cliExecutable:'relative.exe'},
+      {...good,desktopDatabasePath:join(root,'main.sqlite')},{...good,desktopArchivePath:join(root,'app.asar')},
+      {...good,desktopDatabasePath:'relative',desktopArchivePath:join(root,'app.asar')}]) {
       writeFileSync(file,JSON.stringify(bad));assert.throws(()=>readOperatorConfig({},file));
       assert.throws(()=>readOperatorConfig(env,file)); // Overrides never conceal an invalid file.
     }
@@ -40,12 +47,13 @@ test('default-path file routes real adapter without QODER env, hot reads stay is
   const file=join(home,'.codex-agent-core','agent-qoder.json');
   const adapter=new URL('./adapter.mjs',import.meta.url).href;
   try {
-    writeFileSync(file,'{'); // Import/describe must not read even an invalid file.
+    writeFileSync(file,'{'); // Import stays pure; invalid discovery exposes only local operations.
     const script=`
       import assert from 'node:assert/strict'; import vm from 'node:vm';
       import {writeFileSync} from 'node:fs'; import {homedir} from 'node:os';
       import {call,describe} from ${JSON.stringify(adapter)};
-      assert.equal(homedir(),${JSON.stringify(home)});assert.equal((await describe()).length,12);
+      assert.equal(homedir(),${JSON.stringify(home)});assert.equal((await describe()).length,4);
+      assert.equal((await describe()).find(operation=>operation.name==='message_observe').annotations.readOnlyHint,true);
       const before={...process.env}, ports=[];
       globalThis.fetch=async(url)=>{const port=new URL(url).port;ports.push(port);await new Promise(r=>setTimeout(r,5));return {ok:true,json:async()=>[{type:'page',url:'qoder-cn-app://renderer/index.html',webSocketDebuggerUrl:'ws://127.0.0.1:'+port+'/devtools/page/mock'}]};};
       globalThis.WebSocket=class extends EventTarget {

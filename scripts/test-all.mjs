@@ -16,17 +16,18 @@ function run(file) {
   }
 }
 run('modules/agent-zcode/build.mjs');
+run('modules/agent-qoder-ide/build.mjs');
+run('modules/agent-mail/build.mjs');
+run('modules/agent-qoder/build.mjs');
 if (failures.length) process.exit(1);
 const directories = ['scripts', 'modules/agent-core/test', 'modules/agent-mail', 'modules/agent-qoder',
-  'modules/agent-qoder-ide', 'modules/agent-zcode', 'qoder-ide-bridge/test'];
+  'modules/agent-qoder-ide', 'modules/agent-qoder-wake', 'modules/agent-zcode', 'qoder-ide-bridge/test',
+  'qoder-codex-bridge/scripts', 'zcode-codex-bridge/plugin/scripts'];
 const tests = directories.flatMap(dir => readdirSync(join(root, dir))
-  .filter(name => name.endsWith('.test.mjs')).sort().map(name => `${dir}/${name}`));
+  .filter(name => name.endsWith('.test.mjs') || name.endsWith('-test.mjs')).sort().map(name => `${dir}/${name}`));
 // Sequential processes keep each existing test's temporary environment overrides isolated.
 for (const file of tests) run(file);
 run('scripts/smoke.mjs');
-for (const file of ['self-test', 'attribution-test', 'message-test', 'native-turn-test'])
-  run(`qoder-codex-bridge/scripts/${file}.mjs`);
-run('zcode-codex-bridge/plugin/scripts/self-test.mjs');
-console.log(`\n${tests.length + 6} public offline checks; failed: ${failures.length}.`);
+console.log(`\n${tests.length + 5} public offline checks; failed: ${failures.length}.`);
 if (failures.length) console.error(failures.join('\n'));
 process.exitCode = failures.length ? 1 : 0;

@@ -3,6 +3,11 @@ import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readSync, readdi
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
+import { native } from './native.mjs';
+import { nativeDiagnostics, readNativeDiagnostics, nativeFailure, secondaryNativeFailure } from './native-failure.mjs';
+import { synchronizeDesktopTurn } from './desktop-history.mjs';
+import { validateMessageObserveArgs, encodeMessageObserveCursor, decodeMessageObserveCursor,
+  validateMessageObservation } from './runtime/core-contracts.mjs';
 
 const desktopInterfaces = {
   inspect: [], identity: [], list: ['listChatSessions'], models: ['listChatComposerModels'],
@@ -165,7 +170,11 @@ function withQueue(config, write, action, context = {}) {
     const meta = hasMeta && db.prepare('SELECT owner_id,queue_path FROM queue_meta WHERE id=1').get();
     if (meta && (meta.owner_id !== queueOwnerId(config) || meta.queue_path !== normalizedQueuePath(path)))
       throw Error('Qoder queue owner identity changed');
-    if (!write) return action(db);
+    if (!write) {
+      db.exec('BEGIN');
+      try { return action(db); }
+      finally { db.exec('ROLLBACK'); }
+    }
     // Never silently convert a WAL database. The peak proof requires one DELETE
     // journal, no attached databases/savepoints, and no dirty-page spill before COMMIT.
     if (db.prepare('PRAGMA journal_mode').get().journal_mode !== 'delete')
@@ -231,6 +240,10 @@ function ensureSchema(db, config) {
     terminal_outcome TEXT,
     observed_at TEXT,
     correlation TEXT,
+    transport TEXT,
+    native_result TEXT,
+    desktop_sync TEXT,
+    failure_diagnostics TEXT,
     created_at TEXT NOT NULL
   )`);
   const columns = new Set(db.prepare('PRAGMA table_info(sends)').all().map(column => column.name));
@@ -238,11 +251,26 @@ function ensureSchema(db, config) {
   if (!columns.has('terminal_outcome')) db.exec('ALTER TABLE sends ADD COLUMN terminal_outcome TEXT');
   if (!columns.has('observed_at')) db.exec('ALTER TABLE sends ADD COLUMN observed_at TEXT');
   if (!columns.has('correlation')) db.exec('ALTER TABLE sends ADD COLUMN correlation TEXT');
+  if (!columns.has('transport')) db.exec('ALTER TABLE sends ADD COLUMN transport TEXT');
+  if (!columns.has('native_result')) db.exec('ALTER TABLE sends ADD COLUMN native_result TEXT');
+  if (!columns.has('desktop_sync')) db.exec('ALTER TABLE sends ADD COLUMN desktop_sync TEXT');
+  if (!columns.has('failure_diagnostics')) db.exec('ALTER TABLE sends ADD COLUMN failure_diagnostics TEXT');
   db.exec('UPDATE sends SET correlation=request_id WHERE correlation IS NULL');
   db.exec(`CREATE TABLE IF NOT EXISTS worker (
     id INTEGER PRIMARY KEY CHECK(id=1), token TEXT, registration_key TEXT, lease_until INTEGER NOT NULL DEFAULT 0
   ); INSERT OR IGNORE INTO worker(id) VALUES(1)`);
   ensureOwner(db, config);
+}
+function nativeOwner(config, sessionId, beforeSeq) {
+  return withQueue(config, false, db => {
+    if (!db || !db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='sends'").get()) return null;
+    const created = db.prepare("SELECT * FROM sends WHERE session_id=? AND operation='send_new_session' ORDER BY seq LIMIT 1").get(sessionId);
+    if (created?.transport !== 'native' || created.native_ack !== 1 ||
+        created.workspace_id !== config.workspaceId.toLowerCase() || normalizedRoot(created.cwd) !== normalizedRoot(config.root)) return null;
+    if (beforeSeq === undefined) return created;
+    const prior = db.prepare('SELECT * FROM sends WHERE session_id=? AND seq<? ORDER BY seq DESC LIMIT 1').get(sessionId, beforeSeq);
+    return prior?.transport === 'native' && prior.native_ack === 1 && prior.observed_at && prior.native_result ? prior : null;
+  });
 }
 function reserve(args, config, operation, context) {
   scoped(args, config);
@@ -267,6 +295,8 @@ function reserve(args, config, operation, context) {
     db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='sends'").get()
       ? db.prepare('SELECT * FROM sends WHERE request_id=?').get(requestId) : undefined);
   if (existing) return deduplicated(existing);
+  if (operation === 'send' && config.cliExecutable && !nativeOwner(config, sessionId))
+    throw Error('Native resume requires a Core-owned session; external desktop idle state is unknown/unsupported');
   checkBudget(config, context, null, Buffer.byteLength(args.prompt) + 8192);
   return withQueue(config, true, db => {
     ensureSchema(db, config);
@@ -274,13 +304,14 @@ function reserve(args, config, operation, context) {
     if (prior) return deduplicated(prior);
     if (db.prepare('SELECT COUNT(*) AS n FROM sends').get().n >= 500) throw Error('Qoder queue capacity reached');
     const createdAt = new Date().toISOString();
-    const seq = db.prepare(`INSERT INTO sends(request_id,session_id,workspace_id,cwd,prompt,operation,fingerprint,state,correlation,created_at)
-      VALUES(?,?,?,?,?,?,?,'queued',?,?)`).run(requestId, sessionId, config.workspaceId.toLowerCase(), normalizedRoot(config.root), args.prompt, operation, fingerprint, correlation, createdAt).lastInsertRowid;
+    const transport = config.cliExecutable ? 'native' : 'cdp';
+    const seq = db.prepare(`INSERT INTO sends(request_id,session_id,workspace_id,cwd,prompt,operation,fingerprint,state,correlation,transport,created_at)
+      VALUES(?,?,?,?,?,?,?,'queued',?,?,?)`).run(requestId, sessionId, config.workspaceId.toLowerCase(), normalizedRoot(config.root), args.prompt, operation, fingerprint, correlation, transport, createdAt).lastInsertRowid;
     const head = db.prepare(`SELECT seq FROM sends WHERE session_id=? AND observed_at IS NULL ORDER BY seq LIMIT 1`).get(sessionId);
     const claimed = head.seq === seq;
     if (claimed) db.prepare("UPDATE sends SET state='dispatching' WHERE seq=?").run(seq);
     return { requestId, request_id: requestId, session_id: sessionId, workspace_id: config.workspaceId.toLowerCase(),
-      cwd: normalizedRoot(config.root), prompt: args.prompt, operation, correlation, created_at: createdAt,
+      cwd: normalizedRoot(config.root), prompt: args.prompt, operation, correlation, transport, created_at: createdAt,
       seq: Number(seq), state: claimed ? 'dispatching' : 'queued', claimed, deduplicated: false,
       ...receiptFields({ request_id: requestId, correlation }, config) };
   }, context);
@@ -295,10 +326,11 @@ function claimNext(config, sessionId, context) {
     return { ...row, state: 'dispatching' };
   }, context);
 }
-function finish(config, requestId, nativeAck, context) {
-  withQueue(config, true, db => db.prepare(`UPDATE sends SET state=?,native_ack=?
+function finish(config, requestId, nativeAck, context, nativeResult = null, diagnostics = null) {
+  withQueue(config, true, db => db.prepare(`UPDATE sends SET state=?,native_ack=?,native_result=?,failure_diagnostics=?
     WHERE request_id=? AND state='dispatching'`).run(
-      nativeAck ? 'awaiting_observation' : 'needs_attention', nativeAck ? 1 : 0, requestId), context);
+      nativeAck ? 'awaiting_observation' : 'needs_attention', nativeAck ? 1 : 0,
+      nativeResult ? JSON.stringify(nativeResult) : null, diagnostics ? JSON.stringify(diagnostics) : null, requestId), context);
 }
 function observe(config, requestId, outcome, context) {
   withQueue(config, true, db => db.prepare(`UPDATE sends SET terminal_outcome=?,observed_at=?
@@ -307,15 +339,16 @@ function observe(config, requestId, outcome, context) {
 }
 async function reconcileHead(args, config, context) {
   assertActive(context);
-  const row = withQueue(config, false, db => db?.prepare(`SELECT request_id,state,workspace_id,cwd FROM sends
+  const row = withQueue(config, false, db => db?.prepare(`SELECT * FROM sends
     WHERE session_id=? AND observed_at IS NULL ORDER BY seq LIMIT 1`).get(args.sessionId.toLowerCase()));
   if (!row || row.state !== 'awaiting_observation') return { status: row?.state ?? 'empty' };
   if (row.workspace_id !== config.workspaceId.toLowerCase() || normalizedRoot(row.cwd) !== normalizedRoot(config.root))
     return { status: 'scope-changed' };
   const result = await nativeDesktop('verify_turn', { sessionId: args.sessionId, requestId: row.request_id,
-    workspaceId: config.workspaceId, cwd: config.root }, config, context);
+    workspaceId: config.workspaceId, cwd: config.root,
+    ...(row.transport === 'native' ? { nativeResult: row.native_result, prompt: row.prompt } : {}) }, config, context, row.transport ?? 'cdp');
   assertActive(context);
-  const proof = verifyNativeTurn(result?.value, row.request_id);
+  const proof = row.transport === 'native' ? result?.proof : verifyNativeTurn(result?.value, row.request_id);
   if (!proof)
     return { status: 'not-terminal', requestId: row.request_id };
   observe(config, row.request_id, proof.terminalOutcome, context);
@@ -327,7 +360,9 @@ function queueStatus(args, config, context) {
     if (!db || !db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='sends'").get()) return [];
     const columns = new Set(db.prepare('PRAGMA table_info(sends)').all().map(column => column.name));
     const correlation = columns.has('correlation') ? 'correlation' : 'request_id AS correlation';
-    return db.prepare(`SELECT seq,request_id,cwd,state,native_ack,terminal_outcome,observed_at,${correlation},created_at FROM sends
+    const desktopSync = columns.has('desktop_sync') ? 'desktop_sync' : 'NULL AS desktop_sync';
+    const diagnostics = columns.has('failure_diagnostics') ? 'failure_diagnostics' : 'NULL AS failure_diagnostics';
+    return db.prepare(`SELECT seq,request_id,cwd,state,native_ack,terminal_outcome,observed_at,${correlation},${desktopSync},${diagnostics},created_at FROM sends
       WHERE session_id=? AND workspace_id=? ORDER BY seq`).all(
         args.sessionId.toLowerCase(), config.workspaceId.toLowerCase())
       .filter(item => normalizedRoot(item.cwd) === normalizedRoot(config.root));
@@ -343,12 +378,82 @@ function queueStatus(args, config, context) {
     items: items.map(item => ({ seq: item.seq, requestId: item.request_id, ...receiptFields(item, config),
       state: item.observed_at ? 'observed' : item.state, ...(item.state === 'dispatching' ? { liveness: 'unknown' } : {}),
       nativeAck: item.native_ack === 1, terminalOutcome: item.terminal_outcome,
-      observedAt: item.observed_at, createdAt: item.created_at })) };
+      observedAt: item.observed_at, createdAt: item.created_at,
+      ...(readNativeDiagnostics(item.failure_diagnostics) ? { failureDiagnostics: readNativeDiagnostics(item.failure_diagnostics) } : {}),
+      ...(item.desktop_sync ? { desktopHistory: JSON.parse(item.desktop_sync) } : {}) })) };
+}
+
+function observeMessages(args, config, context) {
+  args = validateMessageObserveArgs(args);
+  assertActive(context);
+  if (!config.workspaceId || !config.root || !isAbsolute(config.root)) throw Error('Operator-owned workspace ID and absolute root are required');
+  const moduleId = 'agent-qoder', ownerId = queueOwnerId(config);
+  const scope = { kind: 'retained', ...Object.fromEntries(['correlation', 'requestId', 'deliveryId']
+    .filter(key => args[key] !== undefined).map(key => [key, args[key]])) };
+  const cursorScope = { moduleId, ownerId, view: args.view, workspaceId: config.workspaceId.toLowerCase(),
+    root: createHash('sha256').update(normalizedRoot(config.root)).digest('hex'), ...scope };
+  const after = decodeMessageObserveCursor(args.cursor, cursorScope) ?? 0;
+  if (!Number.isSafeInteger(after) || after < 0) throw Error('Invalid Qoder observation cursor');
+  const result = { schemaVersion: 1, moduleId, ownerId, observedAt: new Date().toISOString(), scope,
+    coverage: { complete: true, limitations: ['historical_rejections_not_recorded', 'sender_and_reply_route_not_recorded', 'native_ack_time_not_recorded'] },
+    retention: { policy: 'retained_owner_records', expiresAt: 'unknown' } };
+  return validateMessageObservation(withQueue(config, false, db => {
+    if (!db || !db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='sends'").get())
+      return args.view === 'stats' ? { ...result, stats: { total: 0, byState: {} } }
+        : args.view === 'detail' ? { ...result, item: null } : { ...result, items: [], hasMore: false, nextCursor: null };
+    const columns = new Set(db.prepare('PRAGMA table_info(sends)').all().map(column => column.name));
+    const correlation = columns.has('correlation') ? 'COALESCE(m.correlation,m.request_id)' : 'm.request_id';
+    const conditions = ["m.workspace_id=?", "LOWER(REPLACE(m.cwd,char(92),'/'))=?"], parameters = [config.workspaceId.toLowerCase(), normalizedRoot(config.root)];
+    for (const [key, expression] of [['correlation', correlation], ['requestId', 'm.request_id'], ['deliveryId', "'qoder-delivery:'||m.request_id"]])
+      if (args[key] !== undefined) { conditions.push(`${expression}=?`); parameters.push(args[key]); }
+    const where = conditions.join(' AND ');
+    const state = columns.has('observed_at') ? "CASE WHEN m.observed_at IS NOT NULL THEN 'observed' ELSE m.state END" : 'm.state';
+    const ownerRecorded = !!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='queue_meta'").get();
+    if (!ownerRecorded) result.coverage.limitations.push('legacy_owner_identity_not_recorded');
+    if (args.view === 'stats') {
+      const byState = Object.fromEntries(db.prepare(`SELECT ${state} AS state,COUNT(*) AS count FROM sends m WHERE ${where} GROUP BY ${state}`)
+        .all(...parameters).map(row => [row.state, row.count]));
+      const total = Object.values(byState).reduce((sum, count) => sum + count, 0);
+      const accepted = db.prepare(`SELECT COUNT(*) AS count FROM sends m WHERE ${where} AND m.native_ack=1`).get(...parameters).count;
+      const terminalOutcome = columns.has('terminal_outcome') ? Object.fromEntries(db.prepare(`SELECT COALESCE(m.terminal_outcome,'unknown') AS outcome,COUNT(*) AS count
+        FROM sends m WHERE ${where} GROUP BY COALESCE(m.terminal_outcome,'unknown')`).all(...parameters).map(row => [row.outcome, row.count])) : { unknown: total };
+      return { ...result, stats: { total, byState, providerAccepted: { accepted, unknown: total - accepted },
+        consumerConfirmed: { unknown: total }, terminalOutcome, businessAccepted: 'unknown' } };
+    }
+    const selection = ['m.seq', 'm.request_id', 'm.session_id', 'm.state', 'm.native_ack', 'm.prompt', 'm.created_at', `${correlation} AS correlation`,
+      columns.has('terminal_outcome') ? 'm.terminal_outcome' : 'NULL AS terminal_outcome', columns.has('observed_at') ? 'm.observed_at' : 'NULL AS observed_at',
+      columns.has('failure_diagnostics') ? 'm.failure_diagnostics' : 'NULL AS failure_diagnostics'];
+    const rows = db.prepare(`SELECT ${selection.join(',')} FROM sends m WHERE ${where}${args.view === 'items' ? ' AND m.seq>?' : ''} ORDER BY m.seq LIMIT ?`)
+      .all(...parameters, ...(args.view === 'items' ? [after] : []), args.view === 'items' ? args.limit + 1 : 2);
+    const project = row => {
+      const contentLimit = args.view === 'items' ? 512 : 16000;
+      const events = [{ at: row.created_at, kind: 'owner_accepted' }];
+      if (row.observed_at) events.push({ at: row.observed_at, kind: 'native_terminal_observed', detail: { terminalOutcome: row.terminal_outcome ?? 'unknown' } });
+      return { requestId: row.request_id, deliveryId: deliveryId(row.request_id), ownerId, source: 'unknown',
+        target: { moduleId, address: row.session_id }, correlation: row.correlation, replyTo: null,
+        createdAt: row.created_at, updatedAt: row.observed_at ?? row.created_at, state: row.observed_at ? 'observed' : row.state,
+        ...(readNativeDiagnostics(row.failure_diagnostics) ? { failureDiagnostics: readNativeDiagnostics(row.failure_diagnostics) } : {}),
+        content: { status: 'available', text: row.prompt.slice(0, contentLimit), truncated: row.prompt.length > contentLimit },
+        evidence: { ownerAccepted: ownerRecorded ? true : 'unknown', providerAccepted: row.native_ack === 1 ? true : 'unknown',
+          consumerConfirmed: 'unknown', terminalOutcome: row.terminal_outcome ?? 'unknown', businessAccepted: 'unknown' },
+        trace: { status: 'available', events } };
+    };
+    if (args.view === 'detail') {
+      if (rows.length > 1) throw Error('Qoder detail matches multiple deliveries; supply deliveryId');
+      return { ...result, item: rows.length ? project(rows[0]) : null };
+    }
+    const page = rows.slice(0, args.limit), hasMore = rows.length > args.limit;
+    return { ...result, items: page.map(project), hasMore,
+      nextCursor: hasMore ? encodeMessageObserveCursor(cursorScope, page.at(-1).seq) : null };
+  }, context));
 }
 
 // Product-checked internal desktop bridge. Only fixed business operations reach CDP.
-async function nativeDesktop(operation, args = {}, config = {}, context = {}) {
+async function nativeDesktop(operation, args = {}, config = {}, context = {}, transport = config.cliExecutable ? 'native' : 'cdp') {
   assertActive(context);
+  if (!['native','cdp'].includes(transport)) throw Error('Unrecognized persisted Qoder transport; preserve the request without replay');
+  if (transport === 'native' && ['identity', 'list', 'search', 'send', 'send_new_session', 'verify_turn'].includes(operation))
+    return native(operation, args, config, context);
   const interactionRead = `
     if(s.status!=='ready')throw Error('Desktop not ready');
     const scoped=t=>{
@@ -366,7 +471,8 @@ async function nativeDesktop(operation, args = {}, config = {}, context = {}) {
   `;
   const calls = {
     inspect: `return {url:location.href,editors:[...document.querySelectorAll('[contenteditable],input,textarea')].map(e=>({label:e.getAttribute('aria-label'),text:e.value||e.innerText||'',empty:e.getAttribute('data-empty')}))};`,
-    identity: 'return {startupStatus:s.status};',
+    identity: `return {startupStatus:s.status,operations:Object.entries(${JSON.stringify(desktopInterfaces)})
+      .filter(([op,names])=>op!=='inspect'&&names.every(name=>typeof d[name]==='function')).map(([op])=>op)};`,
     list: 'return await d.listChatSessions(a.limit,a.offset,false);',
     models: "return await d.listChatComposerModels({runtimeProfileId:'runtime:qoder',fetchStrategy:a.fetchStrategy,workspaceDirectories:a.workspaceDirectories,executionHostKind:'local'});",
     search: 'return await d.searchChatSession(a.sessionId,a.query,a.limit);',
@@ -495,16 +601,18 @@ export async function observeVerifiedTurn(args, config, context = {}) {
   const row = verifiedRow(args, config);
   if (!row) return null;
   const result = await nativeDesktop('verify_turn', { sessionId: row.session_id, requestId: row.request_id,
-    workspaceId: config.workspaceId, cwd: config.root }, config, context);
+    workspaceId: config.workspaceId, cwd: config.root,
+    ...(row.transport === 'native' ? { nativeResult: row.native_result, prompt: row.prompt } : {}) }, config, context, row.transport ?? 'cdp');
   assertActive(context);
-  const proof = verifyNativeTurn(result.value, row.request_id);
+  const proof = row.transport === 'native' ? result.proof : verifyNativeTurn(result.value, row.request_id);
   const current = verifiedRow(args, config);
   if (!proof || !current || current.observed_at !== row.observed_at ||
       proof.terminalOutcome !== current.terminal_outcome) return null;
   return { ownerId: queueOwnerId(config), deliveryId: args.deliveryId, requestId: row.request_id,
     workspaceId: config.workspaceId, sessionId: row.session_id,
     canonicalCwd: realpathSync.native(resolve(config.root)), ...proof,
-    evidenceSource: 'qoder-cn:normalized-history', productVersion: result.identity.version };
+    evidenceSource: row.transport === 'native' ? 'qoder-cn:sdk-command-result' : 'qoder-cn:normalized-history',
+    productVersion: result.identity.version };
 }
 
 async function projectVerifiedReturns(config, context) {
@@ -525,6 +633,47 @@ async function projectVerifiedReturns(config, context) {
   return result;
 }
 
+async function projectDesktopHistory(config, context, sessionId) {
+  if (!config.desktopDatabasePath || !config.desktopArchivePath) return [];
+  const rows = withQueue(config, false, db => {
+    if (!db || !db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='sends'").get()) return [];
+    const columns = new Set(db.prepare('PRAGMA table_info(sends)').all().map(column => column.name));
+    if (!columns.has('native_result')) return [];
+    const retry = columns.has('desktop_sync') ? context.retryDesktopHistory
+      ? "AND (desktop_sync IS NULL OR json_extract(desktop_sync,'$.state')='failed')" : 'AND desktop_sync IS NULL' : '';
+    return db.prepare(`SELECT * FROM sends WHERE transport='native' AND native_ack=1 AND native_result IS NOT NULL
+      AND state!='needs_attention' ${retry} ORDER BY seq`).all()
+      .filter(row => (!sessionId || row.session_id === sessionId) && row.workspace_id === config.workspaceId.toLowerCase()
+        && normalizedRoot(row.cwd) === normalizedRoot(config.root));
+  });
+  if (!rows.length) return [];
+  const sdk = context.nativeSdk ?? await import('@qodercn-ai/qodercn-agent-sdk'), results = [];
+  for (const row of rows) {
+    assertActive(context);
+    if (!nativeOwner(config, row.session_id)) continue;
+    let result;
+    try {
+      result = await synchronizeDesktopTurn({ sdk, record: JSON.parse(row.native_result),
+        args: { sessionId: row.session_id, requestId: row.request_id, prompt: row.prompt }, config,
+        databasePath: config.desktopDatabasePath, archivePath: config.desktopArchivePath,
+        ownerId: queueOwnerId(config), projection: context.desktopProjection, assertActive: () => assertActive(context) });
+    } catch (error) {
+      assertActive(context);
+      result = { state: 'failed', reason: String(error.message).slice(0,512) };
+    }
+    // Desktop projection is independent of dispatch/terminal/return acceptance; never resend on failure.
+    try {
+      withQueue(config, true, db => {
+        assertActive(context); ensureSchema(db, config);
+        db.prepare('UPDATE sends SET desktop_sync=? WHERE request_id=? AND native_ack=1')
+          .run(JSON.stringify(result), row.request_id);
+      }, context);
+    } catch { assertActive(context); }
+    results.push({ requestId: row.request_id, ...result });
+  }
+  return results;
+}
+
 function hasObservedPendingReturn(config, results, sessionId) {
   const pending = results.filter(result => result?.state === 'nonterminal');
   if (!pending.length) return false;
@@ -539,22 +688,38 @@ function hasObservedPendingReturn(config, results, sessionId) {
 }
 
 async function dispatchClaimed(claimed, config, context) {
+  let idleAnchor;
   try {
     assertActive(context);
+    if (claimed.transport === 'native' && claimed.operation === 'send') {
+      idleAnchor = nativeOwner(config, claimed.session_id, claimed.seq);
+      if (!idleAnchor) throw Error('Native resume requires a verified Core-owned idle boundary');
+    }
     writeFileSync(join(dirname(queueFile(config)), `${claimed.request_id}.json`), markerText(claimed), { flag: 'wx' });
   } catch (error) {
-    finish(config, claimed.request_id, false, context);
+    try { finish(config, claimed.request_id, false, context); }
+    catch (cause) {
+      if (claimed.transport === 'native') throw secondaryNativeFailure(nativeFailure('dispatch_marker', 'dispatch_marker_failed', error), 'finalization', cause);
+      throw cause;
+    }
     if (error.code === 'EEXIST') return { requestId: claimed.request_id, delivery: 'not-resent',
       queueState: 'needs_attention', completion: 'unknown', ...receiptFields(claimed, config) };
     throw error;
   }
   let result, error;
   try { result = await nativeDesktop(claimed.operation, { sessionId: claimed.session_id,
-    requestId: claimed.request_id, prompt: claimed.prompt, workspaceId: config.workspaceId, cwd: config.root }, config, context); }
+    requestId: claimed.request_id, prompt: claimed.prompt, workspaceId: config.workspaceId, cwd: config.root,
+    ...(idleAnchor ? { idleAnchor } : {}) }, config, context, claimed.transport ?? 'cdp'); }
   catch (cause) { error = cause; }
-  finish(config, claimed.request_id, !!result?.value?.accepted, context);
+  try { finish(config, claimed.request_id, !!result?.value?.accepted, context, result?.nativeResult, nativeDiagnostics(error)); }
+  catch (cause) {
+    if (claimed.transport === 'native') throw secondaryNativeFailure(error, 'finalization', cause);
+    throw cause;
+  }
   if (error) throw error;
+  const projected = await projectDesktopHistory(config, context, claimed.session_id);
   return { ...result, requestId: claimed.request_id,
+    ...(projected.length ? { desktopHistory: projected.find(row => row.requestId === claimed.request_id) } : {}),
     queueState: result?.value?.accepted ? 'awaiting_observation' : 'needs_attention', completion: 'unknown',
     ...receiptFields({ ...claimed, native_ack: result?.value?.accepted ? 1 : 0 }, config) };
 }
@@ -602,6 +767,7 @@ function watchQueue(args, config, context) {
       // A failed read may be polled again; a failed dispatch keeps its reservation.
     }
     try {
+      await projectDesktopHistory(fixed, context, sessionId);
       const projected = await projectVerifiedReturns(fixed, context);
       pendingReturn = hasObservedPendingReturn(fixed, projected, sessionId);
     } catch { /* An explicit recover_queue may retry a failed return projection. */ }
@@ -667,12 +833,22 @@ export async function runQueueCycle(config, context) {
     }
   }
   const projected = await projectVerifiedReturns(config, context);
+  const desktopHistory = await projectDesktopHistory(config, context);
   return { activeSessions: activeSessions + Number(hasObservedPendingReturn(config, projected)),
-    progressed: progressed + projected.filter(result => result?.state === 'accepted').length };
+    progressed: progressed + projected.filter(result => result?.state === 'accepted').length, desktopHistory };
+}
+
+export async function desktopCapabilities(config, context = {}) {
+  if (!config.cdpPort) return [];
+  try {
+    const result = await nativeDesktop('identity', {}, config, context, 'cdp');
+    return result.value.startupStatus === 'ready' ? result.value.operations : [];
+  } catch { assertActive(context); return []; }
 }
 
 export async function desktop(operation, args = {}, config = {}, context = {}) {
   assertActive(context);
+  if (operation === 'message_observe') return observeMessages(args, config, context);
   if (operation === 'queue_status') return queueStatus(args, config, context);
   if (operation !== 'send' && operation !== 'send_new_session') return nativeDesktop(operation, args, config, context);
   const item = reserve(args, config, operation, context);

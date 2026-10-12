@@ -62,8 +62,10 @@ try {
   cpSync(join(repo, "modules/agent-zcode"), moduleRoot, { recursive: true });
   assert.equal(cli("install", moduleRoot).id, "agent-zcode");
   mkdirSync(qoderRoot);
-  for (const file of ["agent-module.json", "adapter.mjs", "desktop.mjs", "config.mjs", "launch.mjs", "worker.mjs"])
+  for (const file of ["agent-module.json", "adapter.mjs", "desktop.mjs", "config.mjs", "launch.mjs", "worker.mjs",
+    "native.mjs", "native-failure.mjs", "desktop-history.mjs", "return-observe.mjs"])
     cpSync(join(repo, "modules/agent-qoder", file), join(qoderRoot, file));
+  cpSync(join(repo, "modules/agent-qoder/runtime"), join(qoderRoot, "runtime"), { recursive: true });
   assert.equal(cli("install", qoderRoot).id, "agent-qoder");
   cli("budget-init", queueOwnerId(database));
   assert.equal(existsSync(config), false);
@@ -100,22 +102,21 @@ try {
   assert.deepEqual(available.modules.map(item => item.id).sort(), ["agent-qoder", "agent-zcode"]);
   assert.equal(available.operations, undefined);
   const qoderDescription = await tool("agent_discover", { moduleId: "agent-qoder" });
-  assert.equal(qoderDescription.operations.length, 12);
+  assert.deepEqual(qoderDescription.operations.map(item => item.name),
+    ["message_observe", "launch", "queue_status", "recover_queue"]);
   assert.ok(qoderDescription.operations.some(item => item.name === "recover_queue" && !item.annotations.readOnlyHint));
   assert.ok(qoderDescription.operations.some(item => item.name === "launch" && !item.annotations.readOnlyHint));
   assert.ok(qoderDescription.operations.some(item => item.name === "queue_status" && item.annotations.readOnlyHint));
-  assert.ok(qoderDescription.operations.some(item => item.name === "send_new_session" && !item.annotations.readOnlyHint));
-  assert.ok(qoderDescription.operations.some(item => item.name === "read_interactions"));
-  assert.ok(qoderDescription.operations.some(item => item.name === "respond_permission"));
-  await rejected("agent_read", { moduleId: "agent-qoder", operation: "send", args: {} }, /mutating/i);
+  await rejected("agent_read", { moduleId: "agent-qoder", operation: "send", args: {} }, /unknown.*operation/i);
   await rejected("agent_read", { moduleId: "agent-qoder", operation: "launch", args: {} }, /mutating/i);
-  await rejected("agent_read", { moduleId: "agent-qoder", operation: "send_new_session", args: {} }, /mutating/i);
-  await rejected("agent_read", { moduleId: "agent-qoder", operation: "respond_permission", args: {} }, /mutating/i);
+  await rejected("agent_read", { moduleId: "agent-qoder", operation: "recover_queue", args: {} }, /mutating/i);
+  await rejected("agent_read", { moduleId: "agent-qoder", operation: "send_new_session", args: {} }, /unknown.*operation/i);
+  await rejected("agent_read", { moduleId: "agent-qoder", operation: "respond_permission", args: {} }, /unknown.*operation/i);
   await rejected("agent_read", { moduleId: "agent-qoder", operation: "read_interactions",
-    args: { sessionId: "78d8fae4-1436-458a-b9c3-96ab1730f3ae" } }, /Operator-owned workspace/);
+    args: { sessionId: "00000000-0000-4000-8000-000000000020" } }, /unknown.*operation/i);
   await rejected("agent_read", { moduleId: "agent-qoder", operation: "queue_status",
-    args: { sessionId: "78d8fae4-1436-458a-b9c3-96ab1730f3ae" } }, /Operator-owned workspace/);
-  await rejected("agent_read", { moduleId: "agent-qoder", operation: "identity", args: {} }, /Explicit local/);
+    args: { sessionId: "00000000-0000-4000-8000-000000000020" } }, /Operator-owned workspace/);
+  await rejected("agent_read", { moduleId: "agent-qoder", operation: "identity", args: {} }, /unknown.*operation/i);
   assert.equal(existsSync(qoderDelivery), false, "Qoder discovery/read must not reserve a send");
   const description = await tool("agent_discover", { moduleId: "agent-zcode" });
   assert.equal(description.operations.length, 8);
@@ -136,7 +137,7 @@ try {
 
   cli("disable", "agent-zcode");
   await rejected("agent_read", call("zcode_config_status"), /disabled/i);
-  assert.equal((await tool("agent_discover", { moduleId: "agent-qoder" })).operations.length, 12);
+  assert.deepEqual((await tool("agent_discover", { moduleId: "agent-qoder" })).operations, qoderDescription.operations);
   cli("enable", "agent-zcode");
   assert.equal((await tool("agent_read", call("zcode_config_status"))).valid, true);
   cli("uninstall", "agent-qoder");

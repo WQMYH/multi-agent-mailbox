@@ -9,10 +9,6 @@
       "command": "node",
       "args": ["./node_modules/zcode-acp-server/dist/cli.js", "server"],
       "env": {
-        "HOME": "E:\\Programming\\IDE",
-        "ZCODE_DATA_BASE_DIR": "E:\\Programming\\IDE",
-        "ZCODE_BIN": "D:\\Programs\\ZCode\\resources\\glm\\zcode.cjs",
-        "ZCODE_NODE": "D:\\Program Files\\nodejs\\node.exe",
         "ZCODE_ACP_REMOTE": "0",
         "ZCODE_ACP_AUTO_COMPACT_THRESHOLD": "0"
       },

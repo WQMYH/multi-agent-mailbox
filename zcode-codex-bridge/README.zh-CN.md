@@ -1,6 +1,6 @@
 [EN](README.md) | [中文](README.zh-CN.md)
 
-# ZCode Codex Bridge
+# 小折 · Post-Zcode-Zhe
 
 <code>zcode-codex-bridge</code> 是本仓库提供的 ZCode 侧配套插件。它通过本机官方适配器，向一个已配置的 Codex Desktop 任务发送有界状态/结果通知。
 
@@ -20,7 +20,7 @@
 
 | 工具 | 行为 |
 | --- | --- |
-| <code>codex_binding_status</code> | 检查本地绑定并报告过期时间、配置提示、有界报告统计和仅含元数据的 Hook 状态，不连接 Codex。 |
+| <code>codex_binding_status</code> | 检查本地绑定并报告配置错误、配置提示、有界报告统计和仅含元数据的 Hook 状态，不连接 Codex。 |
 | <code>codex_thread_read</code> | 默认只读取绑定任务摘要；可选 <code>view: "active_count"</code> 仅返回观察到的活跃任务数和覆盖情况，不返回其他任务详情。 |
 | <code>codex_host_report</code> | 通过已经运行的 Codex 桌面适配器发送一次有界结构化状态/结果通知，必须提供 <code>requestId</code> 和 <code>report</code>。 |
 | <code>codex_fixed_reply_test</code> | 已退役的独立进程候选，生产环境保持阻断。 |
@@ -41,7 +41,7 @@
 ## 安全边界
 
 - 只允许一个已配置的 Codex 任务 ID 和精确工作目录。
-- ZCode 绑定和桌面宿主绑定都会过期。
+- 保留固定目标、cwd、来源核对和当前原生宿主连接及权限；不设插件自行规定的到期门。
 - 只接受有界结构化报告字段；不提供任意 prompt、任务选择、模型选择、命令或 operation 参数。
 - 只允许访问官方宿主适配器的 <code>read_thread</code> 和 <code>send_message_to_thread</code> 工具。
 - 不向 ZCode 暴露任务历史。
@@ -62,13 +62,12 @@
    - <code>codex_cwd</code>：目标任务的精确目录
    - <code>source_session_id</code>：ZCode 来源标签
    - <code>team_id</code>：受限 team 标签
-   - <code>binding_expires_at</code>：ISO-8601 过期时间
    - <code>expected_reply</code>：大写固定回执令牌
 
-4. 在获得授权的 Codex 任务环境中保存短期桌面宿主绑定：
+4. 在获得授权的 Codex 任务环境中保存固定桌面宿主连接：
 
    ~~~text
-   node "<installed-plugin-directory>/scripts/host-client.mjs" --configure-host <plugin-data-directory> <official-app-tools-server.mjs> <ISO-expiry>
+   node "<installed-plugin-directory>/scripts/host-client.mjs" --configure-host <plugin-data-directory> <official-app-tools-server.mjs>
    ~~~
 
    该命令需要当前 Codex 桌面环境，只在插件数据目录写入 <code>host-config.json</code>，不会输出管道地址。
@@ -79,7 +78,9 @@
 
 ## 使用
 
-先调用 <code>codex_binding_status</code>，确认目标、目录、过期时间、<code>hostReportConfigured: true</code> 以及返回的 <code>setupHint</code>/<code>hostReports</code>；需要新鲜目标状态时调用 <code>codex_thread_read</code>。
+先调用 <code>codex_binding_status</code>，确认目标、目录、<code>hostReportConfigured: true</code> 以及返回的 <code>setupHint</code>/<code>hostReports</code>；需要新鲜目标状态时调用 <code>codex_thread_read</code>。
+
+无需提供或续期任何日期。未提供、格式无效或旧的已过期日期都不阻断读取和通知。有效的旧绑定日期仅按原格式保留，兼容历史 fingerprint，不作为授权；宿主通知的去重身份不变。旧配置命令的第三个日期参数被忽略。当前宿主连接和原生权限仍然生效；桌面管道变化后仍需重新配置连接。
 
 获得明确授权后，只用一个新的稳定 request ID 和如下结构调用一次 <code>codex_host_report</code>：
 
@@ -121,7 +122,7 @@ node --check scripts/self-test.mjs
 node --check hooks/probe.mjs
 ~~~
 
-无依赖测试覆盖结构化参数边界、目标和目录核对、活动/忙碌/空闲/<code>notLoaded</code> 路径、同/异 payload 并发、未知投递不重放、回执容量、过期、历史剥离、MCP 生命周期、Hook 保留和清单解析。
+无依赖测试覆盖结构化参数边界、目标和目录核对、活动/忙碌/空闲/<code>notLoaded</code> 路径、同/异 payload 并发、未知投递不重放、回执容量、缺失/旧过期日期兼容、历史剥离、MCP 生命周期、Hook 保留和清单解析。到期回归使用私有夹具、离线宿主流替身及明确发送计数，不连接真实宿主。
 
 以下是 0.2.4 于 2026-09-09 完成的历史实机验收，不代表本 0.3.1 源码候选已经实机验证：
 

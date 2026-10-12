@@ -10,7 +10,7 @@
     "zcode-acp-server": "0.21.0"
   },
   "scripts": {
-    "build": "node modules/agent-zcode/build.mjs",
+    "build": "node modules/agent-zcode/build.mjs && node modules/agent-qoder-ide/build.mjs && node modules/agent-mail/build.mjs && node modules/agent-qoder/build.mjs",
     "test": "node scripts/test-all.mjs",
     "smoke": "node scripts/smoke.mjs"
   },

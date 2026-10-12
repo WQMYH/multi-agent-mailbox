@@ -5,6 +5,7 @@ const { closeSync, existsSync, fsyncSync, ftruncateSync, mkdirSync, openSync, re
   realpathSync, renameSync, statSync, unlinkSync, writeFileSync } = require("node:fs");
 const { dirname, isAbsolute, join, resolve } = require("node:path");
 const { Worker } = require("node:worker_threads");
+const { observeMessages, ownerIdForStateDir, readRecordAt, recordCapacity, statusOf } = require("./message-observe.cjs");
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const id = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
@@ -19,7 +20,6 @@ const messageDir = stateDir => join(stateDir, "message-reservations");
 const claimDir = stateDir => join(stateDir, "request-reservations");
 const recordPath = (dir, requestId) => join(dir, `${requestId}.json`);
 const headroomPath = (dir, requestId) => join(dir, `${requestId}.headroom`);
-const MAX_RECORD_BYTES = 64 * 1024;
 const MAX_LOCK_BYTES = 512;
 const LOCK_NAME = ".owner.lock";
 
@@ -27,12 +27,6 @@ function failure(code, message, status = 500) {
   return Object.assign(Error(message), { code, status });
 }
 
-function ownerIdForStateDir(stateDir) {
-  if (!isAbsolute(stateDir)) throw failure("INVALID_STATE_DIR", "Qoder IDE stateDir must be absolute", 400);
-  const store = canonical(stateDir);
-  const identity = process.platform === "win32" ? store.toLowerCase() : store;
-  return `qoder-ide-store:${digest(identity).slice(0, 40)}`;
-}
 
 function readLock(path, ownerId) {
   let text, value;
@@ -157,7 +151,7 @@ function resizeHeadroom(path, bytes, exclusive = false) {
 
 function boundedText(record) {
   const text = textOf(record);
-  if (Buffer.byteLength(text) > MAX_RECORD_BYTES)
+  if (Buffer.byteLength(text) > recordCapacity(record))
     throw failure("MESSAGE_RECORD_TOO_LARGE", "Qoder IDE page reservation exceeded its bounded record size", 507);
   return text;
 }
@@ -169,26 +163,16 @@ function replaceCommittedRecord(path, current, next) {
     throw failure("LEGACY_RECORD", "Legacy page reservation is preserved but cannot be updated", 503);
   const oldBytes = statSync(path).size;
   const nextBytes = Buffer.byteLength(text);
-  resizeHeadroom(room, 2 * MAX_RECORD_BYTES - oldBytes - nextBytes);
+  const capacity = recordCapacity(current);
+  resizeHeadroom(room, 2 * capacity - oldBytes - nextBytes);
   try { atomicWrite(path, text); }
   catch (error) {
-    resizeHeadroom(room, 2 * MAX_RECORD_BYTES - oldBytes);
+    resizeHeadroom(room, 2 * capacity - oldBytes);
     throw error;
   }
-  resizeHeadroom(room, 2 * MAX_RECORD_BYTES - nextBytes);
+  resizeHeadroom(room, 2 * capacity - nextBytes);
 }
 
-function readRecordAt(path) {
-  const value = JSON.parse(readFileSync(path, "utf8"));
-  const current = [2, 3].includes(value.schemaVersion) && id.test(value.ownerId ?? "") &&
-    Number.isSafeInteger(value.allocatedBytes) && value.allocatedBytes > 0;
-  const legacy = value.schemaVersion === 1 && id.test(value.ownerId ?? "") &&
-    Number.isSafeInteger(value.budgetBytes) && value.budgetBytes > 0;
-  if (!plain(value) || (!current && !legacy) || !uuid.test(value.requestId ?? "") ||
-      !id.test(value.deliveryId ?? "") || !isAbsolute(value.workspace) || value.retrySafe !== false)
-    throw failure("INVALID_RECORD", "Invalid Qoder IDE page reservation record", 503);
-  return value;
-}
 
 function recoveryFailure(message = "Qoder IDE reservation store needs manual recovery") {
   return failure("STORE_RECOVERY_REQUIRED", message, 503);
@@ -241,7 +225,7 @@ function recoverStore(stateDir, ownerId) {
       const room = headroomPath(messages, record.requestId);
       if (record.ownerId !== ownerId || !existsSync(room)) throw recoveryFailure();
       const recordBytes = statSync(path).size;
-      const expected = 2 * MAX_RECORD_BYTES - recordBytes;
+      const expected = 2 * recordCapacity(record) - recordBytes;
       if (expected < 0) throw recoveryFailure();
       return { room, expected, actual: statSync(room).size, allocatedBytes: record.allocatedBytes };
     }).filter(Boolean);
@@ -292,10 +276,12 @@ function reserveMessage({ stateDir, allocatedBytes, requestId, deliveryId, insta
     const record = { schemaVersion: 3, ownerId, allocatedBytes, requestId, deliveryId, correlation,
       instanceId, workspace: canonicalWorkspace, deliveryScope: "current_page_at_dispatch",
       targetPrecision: "page_level_not_session_atomic", contentSha256: digest(content), promptSha256: digest(prompt),
+      content,
       reservedAt: new Date(now).toISOString(), retrySafe: false };
     const text = boundedText(record);
-    checkPeak(stateDir, allocatedBytes, 2 * MAX_RECORD_BYTES);
-    resizeHeadroom(headroomPath(dir, requestId), 2 * MAX_RECORD_BYTES - Buffer.byteLength(text), true);
+    const capacity = recordCapacity(record);
+    checkPeak(stateDir, allocatedBytes, 2 * capacity);
+    resizeHeadroom(headroomPath(dir, requestId), 2 * capacity - Buffer.byteLength(text), true);
     atomicWrite(path, text, true);
     return statusOf(record);
   });
@@ -317,7 +303,7 @@ function updateMessage(stateDir, requestId, update) {
 }
 
 function recordCommandOutcome(stateDir, requestId, command) {
-  return updateMessage(stateDir, requestId, current => ({ ...current, command }));
+  return updateMessage(stateDir, requestId, current => ({ ...current, command: { ...command, observedAt: new Date().toISOString() } }));
 }
 
 function readMessage(stateDir, requestId) {
@@ -420,19 +406,7 @@ function collectHook(raw, configPath) {
   } catch { return "unattributable"; }
 }
 
-function statusOf(record) {
-  const providerAcceptance = record.provider && !record.quarantine ?
-    { state: "accepted", evidence: "matched UserPromptSubmit hook" } : { state: "unknown" };
-  const reply = record.quarantine ? { state: "quarantined", reason: "provider_attribution_conflict" } :
-    record.reply ?? (record.replySupport === "unsupported_native_request_set_id_unavailable" ?
-      { state: "unsupported", reason: "native_request_set_id_unavailable" } :
-      { state: record.provider ? "pending" : "unobserved" });
-  return { requestId: record.requestId, deliveryId: record.deliveryId, ownerId: record.ownerId,
-    instanceId: record.instanceId, workspace: record.workspace, correlation: record.correlation,
-    deliveryScope: record.deliveryScope, targetPrecision: record.targetPrecision, retrySafe: false,
-    reservation: { state: "persisted", ownerId: record.ownerId, deliveryId: record.deliveryId },
-    providerAcceptance, command: record.command ?? { state: "reserved_not_dispatched" }, reply };
-}
 
-module.exports = { claimMutation, collectHook, ownerIdForStateDir, readMessage, recordCommandOutcome,
+
+module.exports = { claimMutation, collectHook, observeMessages, ownerIdForStateDir, readMessage, recordCommandOutcome,
   reserveMessage, wireContent };

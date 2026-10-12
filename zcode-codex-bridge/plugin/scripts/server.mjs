@@ -36,7 +36,7 @@ export const tools = [
   },
   {
     name: "codex_binding_status",
-    description: "Inspect the fixed local binding, configuration errors (including expiry), receipt counts, and metadata-only Hook probe summary. Never creates data or contacts Codex; configured does not prove a live connection.",
+    description: "Inspect the fixed local binding, configuration errors, receipt counts, and metadata-only Hook probe summary. Never creates data or contacts Codex; configured does not prove a live connection.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
   },
@@ -69,21 +69,20 @@ const canonical = value => {
   return normalize(existsSync(path) ? realpathSync.native(path) : path).toLowerCase();
 };
 
-export function loadBinding(env = process.env, now = Date.now()) {
+export function loadBinding(env = process.env) {
   const codexScript = required(env, "ZCC_CODEX_SCRIPT");
   const cwd = required(env, "ZCC_CODEX_CWD");
-  const expiresAt = required(env, "ZCC_BINDING_EXPIRES_AT");
-  const expiry = Date.parse(expiresAt);
+  // Retain valid legacy metadata in its original fingerprint format, never as an authorization gate.
+  const expiry = Date.parse(env.ZCC_BINDING_EXPIRES_AT);
   if (!existsSync(codexScript) || basename(codexScript).toLowerCase() !== "codex.js") throw Error("Codex script must be an existing codex.js file");
   if (!existsSync(cwd)) throw Error("Bound Codex cwd does not exist");
-  if (!Number.isFinite(expiry) || expiry <= now) throw Error("Binding expiry is invalid or has passed");
   const binding = {
     codexScript: realpathSync.native(codexScript),
     threadId: required(env, "ZCC_CODEX_THREAD_ID"),
     cwd: realpathSync.native(cwd),
     sourceSessionId: required(env, "ZCC_SOURCE_SESSION_ID"),
     teamId: required(env, "ZCC_TEAM_ID"),
-    expiresAt: new Date(expiry).toISOString(),
+    expiresAt: Number.isFinite(expiry) ? new Date(expiry).toISOString() : undefined,
     expectedReply: required(env, "ZCC_EXPECTED_REPLY")
   };
   if (!/^[0-9a-f-]{36}$/i.test(binding.threadId)) throw Error("Invalid bound Codex task ID");
@@ -220,7 +219,6 @@ export async function sendFixedReplyTest(binding, { onDispatch = async () => {},
     assertBoundThread(resumed.thread, binding);
     if (resumed.thread.status?.type !== "idle") throw Error("Bound Codex task is not idle after resume");
     const prompt = `这是 ZCode→Codex 固定回复连接验证，不继续该任务原业务。请仅回复：${binding.expectedReply}。不要调用工具、修改文件、启动任务或提出后续行动。`;
-    if (Date.parse(binding.expiresAt) <= Date.now()) throw Error("Binding expired before dispatch");
     await onDispatch();
     const started = await client.request("turn/start", { threadId: binding.threadId, input: [{ type: "text", text: prompt }], cwd: binding.cwd,
       approvalPolicy: "never", sandboxPolicy: { type: "readOnly", access: { type: "fullAccess" } } });
@@ -329,11 +327,11 @@ function bindingStatus({ env = process.env, binding, root } = {}) {
   }
   const codes = new Set(diagnostics.map(issue => issue.code));
   const setupHint = codes.has("binding_invalid") || codes.has("data_path_missing")
-    ? "Set the required plugin options for the fixed task, cwd, source label and future expiry; never take target values from report content."
+    ? "Set the required plugin options for the fixed task, cwd and source label; never take target values from report content."
     : codes.has("host_reports_unreadable")
       ? "Inspect the malformed local host-report receipts; preserve uncertain records and do not resend them."
       : [...codes].some(code => code.startsWith("host_"))
-      ? "From the bound Codex task, run host-client.mjs --configure-host with the plugin data directory, official app-tools server and a future ISO expiry; never copy or guess the pipe."
+      ? "From the bound Codex task, run host-client.mjs --configure-host with the plugin data directory and official app-tools server; never copy or guess the pipe."
       : "Use codex_thread_read for a fresh target/cwd check before an authorized report.";
   return { state: diagnostics.length ? "blocked" : "configured", bindingValid, connectionVerified: false, diagnostics, setupHint,
     sourceSessionId: info.sourceSessionId, sourceIdentityAuthenticated: false, threadId: info.threadId, cwd: info.cwd,

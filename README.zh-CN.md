@@ -1,6 +1,8 @@
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-# 多智能体信箱 · Multi-Agent Mailbox
+# 文枢 · Post-Core
+
+文枢是本机多智能体信箱的公共基底，英文名为 Post-Core。专用入口命名为：Qoder「小洞」（Post-Qoder-Dong）、ZCode「小折」（Post-Zcode-Zhe）、ChatGPT「小元」（Post-Chat-Yuan）。Claude Code 和 Kimi Code 直接接入同一文枢 MCP 实现，不建立专属插件。现有安装标识、工具名、队列 owner 与数据路径保持兼容。
 
 [![CI](https://github.com/WQMYH/multi-agent-mailbox/actions/workflows/ci.yml/badge.svg)](https://github.com/WQMYH/multi-agent-mailbox/actions/workflows/ci.yml)
 [![Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
@@ -22,11 +24,13 @@
 
 ## 已测智能体与兼容性
 
-以下实机范围截至 **2026-10-01**，操作系统为 Windows。产品版本仅记录环境，**不是强制白名单**；先检查能力，在调用失效时再核对更新影响。
+以下记录包含截至 **2026-10-12** 的限定实机验证，逐项范围见[兼容说明](docs/compatibility.md)，操作系统为 Windows。产品版本仅记录环境，**不是强制白名单**；先检查能力，在调用失效时再核对更新影响。
 
 | 智能体 | 通用信箱实测 | 专用适配实测 |
 | --- | --- | --- |
 | Codex | Core 发信、收信、关联回复、精确确认 | 三工具 MCP 与同实现 CLI |
+| Claude Code | 直接 Core MCP 真实收信、关联回信、双方确认；沿用已有 DeepSeek Flash 配置 | 不需要专用插件 |
+| Kimi Code | 持久登记原生 Core MCP，真实收信、关联回信、双方确认；沿用已有 DeepSeek Flash 配置 | 不需要专用插件 |
 | pi | 原生 mail 工具；pi → Qoder → 同一 pi 会话闭环 | 不需要专用插件 |
 | Qoder CN 独立版 | pi ↔ Qoder 闭环真实收信、回信 | 创建/发送、FIFO、多会话/多轮回传、崩溃后显式恢复 |
 | ZCode CLI | **Codex ↔ 同一原生 CLI 会话**收信、回信、确认，无 Sharing Link | 使用原生命令工具，无需专用 mail 插件 |
@@ -35,7 +39,7 @@
 
 **其他智能体基本具备接口兼容条件**：能运行 Node CLI 或作为 MCP 客户端接入即可。未逐款实测，不将接口兼容当作全部产品认证。需要原生唤醒、会话定位或 Hooks 时可配备最小专门化插件；复用 Core/现有队列，不叠加第二套发送状态机。
 
-通用 mail 是**拉取型信箱，不自动唤醒产品**。ZCode 无 link 测试是新原生 CLI 会话和显式接续；`agent-zcode` 对**桌面已有会话**的控制仍需 Sharing Link。两条通道分别标注。
+通用 mail 保留持久拉取路线。明确接线的原生 receiver 也可通知指定既有会话；2026-10-11 的限定原生验收已通过 Kimi ↔ Codex fresh 通知、实际取信、关联回信与精确确认。receiver 支持和原生审批须按产品分别核实。ZCode 无 link 测试是新原生 CLI 会话和显式接续；`agent-zcode` 对**桌面已有会话**的控制仍需 Sharing Link。两条通道分别标注。
 
 ## 最小安装：只用信箱
 
@@ -72,10 +76,13 @@ node /absolute/path/to/multi-agent-mailbox/modules/agent-core/src/mcp-server.mjs
 | `agent-core` | 公共 CLI/MCP、生命周期 | [Core](modules/agent-core/README.md) |
 | `agent-mail` | 通用信箱 | [Mail](modules/agent-mail/README.md) |
 | `agent-qoder` | 独立版控制与产品队列 | [Qoder](modules/agent-qoder/README.md) |
+| `agent-qoder-wake` | QoderWake CN 原生 CLI/daemon 控制（实验模块；与独立版、IDE 分开） | [Wake](modules/agent-qoder-wake/README.md) |
 | `qoder-codex-bridge` | Qoder Hook、结果归属、回传 Codex | [回传](qoder-codex-bridge/README.md) |
 | `agent-qoder-ide` + `qoder-ide-bridge` | 认证窗口、命令和当前页交互 | [IDE](qoder-ide-bridge/README.md) |
 | `agent-zcode` | ZCode 桌面端原生远程控制 | [ZCode](modules/agent-zcode/README.md) |
 | `zcode-codex-bridge` | ZCode → 固定 Codex 目标状态/通知 | [回传](zcode-codex-bridge/README.zh-CN.md) |
+
+智能体收发指导见 [post-core-mail skill](modules/agent-core/skills/post-core-mail/SKILL.md)：保持同一 Core 实例、读取实际正文、按原信关联回信并精确确认，不重放未知请求。skill 安装与运行会话实际采用分开验证。Wake 使用自己的原生产品状态，不复用 Qoder CN 的 SDK/CDP；原生 Session 事件不是公共信箱的消费确认。
 
 Codex 原生插件入口：
 

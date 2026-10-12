@@ -3,7 +3,7 @@ import { join, normalize, resolve } from "node:path";
 import { loadBinding, loadBindings, loadNativeBinding, validateBindingRecord } from "./event-recorder.mjs";
 import { bindingReservationBytes, removeManaged, writeManagedAtomic, writeManagedExclusive } from "./store-budget.mjs";
 
-const USAGE = "Usage: node configure-binding.mjs [--add] <dataDir> <requestId> <workspaceId> <sessionId> <hookSessionId> <cwd> <targetTaskId> <targetCwd> <expiresAt> [associationJson]";
+const USAGE = "Usage: node configure-binding.mjs [--add] <dataDir> <requestId> <workspaceId> <sessionId> <hookSessionId> <cwd> <targetTaskId> <targetCwd> [expiresAt] [associationJson]";
 
 const ID_PATTERN = /^[A-Za-z0-9_-]{1,80}$/;
 const LOCK_WAIT_MS = 5_000;
@@ -19,12 +19,12 @@ const canonical = value => {
 };
 
 function validate(dataDir, requestId, workspaceId, sessionId, hookSessionId, cwd, targetTaskId, targetCwd, expiresAt) {
-  if (!dataDir || !requestId || !workspaceId || !sessionId || !hookSessionId || !cwd || !targetTaskId || !targetCwd || !expiresAt) throw Error(USAGE);
+  if (!dataDir || !requestId || !workspaceId || !sessionId || !hookSessionId || !cwd || !targetTaskId || !targetCwd) throw Error(USAGE);
   if (!/^[A-Za-z0-9_-]{1,100}$/.test(requestId)) throw Error("Invalid requestId format");
   if (!/^[0-9a-f-]{36}$/i.test(workspaceId)) throw Error("Invalid workspaceId format");
   if (!/^[0-9a-f-]{36}$/i.test(sessionId)) throw Error("Invalid sessionId format");
   if (!ID_PATTERN.test(hookSessionId)) throw Error("Invalid hookSessionId format");
-  if (!Number.isFinite(Date.parse(expiresAt)) || Date.parse(expiresAt) <= Date.now()) throw Error("Invalid or past expiresAt");
+  if (expiresAt !== undefined && (typeof expiresAt !== "string" || !Number.isFinite(Date.parse(expiresAt)) || Date.parse(expiresAt) <= Date.now())) throw Error("Invalid or past expiresAt");
   return true;
 }
 
@@ -41,7 +41,7 @@ function bindingOf(dataDir, requestId, workspaceId, sessionId, hookSessionId, cw
     cwd,
     targetTaskId,
     targetCwd,
-    expiresAt,
+    ...(expiresAt === undefined ? {} : { expiresAt }),
     createdAt: new Date().toISOString(),
     ...(association ?? {})
   });
@@ -123,7 +123,11 @@ const isDirect = process.argv[1]?.endsWith("configure-binding.mjs");
 if (isDirect) {
   try {
     const add = process.argv[2] === "--add";
-    const [dataDir, requestId, workspaceId, sessionId, hookSessionId, cwd, targetTaskId, targetCwd, expiresAt, associationJson] = process.argv.slice(add ? 3 : 2);
+    let [dataDir, requestId, workspaceId, sessionId, hookSessionId, cwd, targetTaskId, targetCwd, expiresAt, associationJson] = process.argv.slice(add ? 3 : 2);
+    if (associationJson === undefined && expiresAt?.trimStart().startsWith("{")) {
+      associationJson = expiresAt;
+      expiresAt = undefined;
+    }
     const association = associationJson === undefined ? undefined : JSON.parse(associationJson);
     const binding = (add ? addBinding : createBinding)(dataDir, requestId, workspaceId, sessionId, hookSessionId, cwd, targetTaskId, targetCwd, expiresAt, association);
     console.log(JSON.stringify({ ok: true, code: "binding_created", requestId: binding.requestId }));

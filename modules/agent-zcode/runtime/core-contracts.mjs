@@ -68,6 +68,102 @@ export function validateMessageReceipt(value) {
   };
 }
 
+export const messageObserveInputSchema = {
+  type: "object", required: ["view"], additionalProperties: false,
+  properties: {
+    view: { type: "string", enum: ["items", "detail", "stats"] },
+    limit: { type: "integer", minimum: 1, maximum: 100, default: 32 },
+    cursor: { type: "string", minLength: 1, maxLength: 4096 },
+    ...Object.fromEntries(["correlation", "requestId", "deliveryId"].map(key =>
+      [key, { type: "string", pattern: idPattern.source, minLength: 1, maxLength: 128 }]))
+  }
+};
+
+export function validateMessageObserveArgs(value) {
+  exact(value, Object.keys(messageObserveInputSchema.properties), "message observation arguments");
+  if (!["items", "detail", "stats"].includes(value.view)) fail("Invalid message observation view");
+  const limit = value.limit ?? 32;
+  if (!Number.isInteger(limit) || limit < 1 || limit > 100) fail("Invalid message observation limit");
+  const result = { view: value.view, limit };
+  for (const key of ["correlation", "requestId", "deliveryId"])
+    if (value[key] !== undefined) result[key] = id(value[key], key);
+  if (value.cursor !== undefined) {
+    if (value.view !== "items" || typeof value.cursor !== "string" ||
+        !/^[A-Za-z0-9_-]{1,4096}$/.test(value.cursor)) fail("Invalid message observation cursor");
+    result.cursor = value.cursor;
+  }
+  if (value.view === "detail" && !result.requestId && !result.deliveryId)
+    fail("Message observation detail requires requestId or deliveryId");
+  return result;
+}
+
+export function encodeMessageObserveCursor(scope, position) {
+  object(scope, "message observation cursor scope");
+  if (!(Number.isSafeInteger(position) && position >= 0) &&
+      !(typeof position === "string" && position.length > 0 && position.length <= 256))
+    fail("Invalid message observation cursor position");
+  return Buffer.from(JSON.stringify({ v: 1, scope, position })).toString("base64url");
+}
+
+export function decodeMessageObserveCursor(cursor, scope) {
+  if (cursor === undefined) return null;
+  try {
+    if (typeof cursor !== "string" || !/^[A-Za-z0-9_-]{1,4096}$/.test(cursor)) throw Error();
+    const value = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
+    exact(value, ["v", "scope", "position"], "message observation cursor");
+    if (value.v !== 1 || JSON.stringify(value.scope) !== JSON.stringify(scope)) throw Error();
+    encodeMessageObserveCursor(scope, value.position);
+    return value.position;
+  } catch { fail("Invalid message observation cursor or changed filters"); }
+}
+
+export function validateMessageObservation(value) {
+  object(value, "message observation");
+  if (value.schemaVersion !== 1) fail("Unsupported message observation schemaVersion");
+  id(value.moduleId, "moduleId");
+  id(value.ownerId, "ownerId");
+  if (!Number.isFinite(Date.parse(value.observedAt))) fail("Invalid observedAt");
+  if (object(value.scope, "scope").kind !== "retained") fail("Invalid message observation scope");
+  const coverage = object(value.coverage, "coverage");
+  if (typeof coverage.complete !== "boolean" || !Array.isArray(coverage.limitations) ||
+      !coverage.limitations.every(text => typeof text === "string")) fail("Invalid message observation coverage");
+  object(value.retention, "retention");
+  const validateItem = item => {
+    object(item, "message observation item");
+    for (const key of ["requestId", "deliveryId", "ownerId"]) id(item[key], key);
+    if (typeof item.state !== "string" || !item.state.length) fail("Invalid message observation state");
+    for (const key of ["createdAt", "updatedAt"])
+      if (item[key] !== "unknown" && !Number.isFinite(Date.parse(item[key]))) fail(`Invalid ${key}`);
+    const content = object(item.content, "content");
+    if (!["available", "unavailable"].includes(content.status) ||
+        content.status === "available" && (typeof content.text !== "string" || content.text.length > 16000))
+      fail("Invalid message observation content");
+    const evidence = object(item.evidence, "evidence");
+    for (const key of ["ownerAccepted", "providerAccepted", "consumerConfirmed"])
+      if (![true, false, "unknown"].includes(evidence[key])) fail(`Invalid evidence.${key}`);
+    if (evidence.businessAccepted !== "unknown") fail("Message observation cannot claim business acceptance");
+    const trace = object(item.trace, "trace");
+    if (!["available", "unavailable"].includes(trace.status) || !Array.isArray(trace.events) || trace.events.length > 100)
+      fail("Invalid message observation trace");
+    for (const event of trace.events)
+      if (!Number.isFinite(Date.parse(event.at)) || typeof event.kind !== "string" || !event.kind.length)
+        fail("Invalid message observation trace event");
+  };
+  if (Object.hasOwn(value, "items")) {
+    if (!Array.isArray(value.items) || value.items.length > 100 || typeof value.hasMore !== "boolean" ||
+        value.nextCursor !== null && typeof value.nextCursor !== "string") fail("Invalid message observation items");
+    value.items.forEach(validateItem);
+  } else if (Object.hasOwn(value, "item")) {
+    if (value.item !== null) validateItem(value.item);
+  } else {
+    const stats = object(value.stats, "stats");
+    if (!(Number.isSafeInteger(stats.total) && stats.total >= 0) && stats.total !== "unknown")
+      fail("Invalid message observation total");
+    object(stats.byState, "stats.byState");
+  }
+  return value;
+}
+
 const owners = ownerIds => {
   if (!Array.isArray(ownerIds) || ownerIds.length === 0) fail("At least one enabled queue owner is required");
   return [...new Set(ownerIds.map(ownerId => id(ownerId, "ownerId")))].sort();

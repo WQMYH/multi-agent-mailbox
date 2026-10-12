@@ -1,7 +1,7 @@
 {
   "name": "codex-with-zcode",
   "interface": {
-    "displayName": "Multi-Agent Mailbox · 多智能体信箱"
+    "displayName": "文枢 · Post-Core"
   },
   "plugins": [
     {

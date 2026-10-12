@@ -1,0 +1,11 @@
+{
+  "name": "agent-qoder",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=24" },
+  "dependencies": {
+    "@qodercn-ai/qodercn-agent-sdk": "1.0.50",
+    "zod": "^4.0.0"
+  }
+}

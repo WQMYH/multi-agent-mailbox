@@ -1,8 +1,11 @@
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
+import { realpathSync } from 'node:fs';
 import { ModuleRegistry, defaultRegistryPath } from "./registry.mjs";
+import { startDashboard } from './dashboard.mjs';
+import { chatTunnelCommand, ensureConfiguredChatTunnel } from './chat-tunnel.mjs';
 
-export const usage = "Usage: node src/cli.mjs [--registry PATH] <install ROOT|list|enable ID|disable ID|uninstall ID|budget-init OWNER...|budget-status|budget status|budget check|budget sync|discover|read|act>";
+export const usage = "Usage: node src/cli.mjs [--registry PATH] <install ROOT|list|enable ID|disable ID|uninstall ID|budget-init OWNER...|budget-status|budget status|budget check|budget sync|discover|read|act|dashboard|chat COMMAND CONFIG>";
 const calls = new Map([
   ["discover", "agentDiscover"],
   ["read", "agentRead"],
@@ -47,6 +50,7 @@ export async function invoke(argv, input, { env = process.env } = {}) {
   const command = positional[0];
   if (!calls.has(command) || positional.length !== 1) throw Error(usage);
   const registry = new ModuleRegistry({ registryPath: registryPath ?? defaultRegistryPath(env) });
+  await ensureConfiguredChatTunnel(registryPath ?? defaultRegistryPath(env), env);
   return registry[calls.get(command)](input);
 }
 
@@ -71,14 +75,27 @@ const flushAndExit = (stream, text, code) => new Promise(resolveWrite => {
   stream.write(text, () => { resolveWrite(); process.exit(code); });
 });
 
-if (process.argv[1] && resolve(fileURLToPath(import.meta.url)) === resolve(process.argv[1])) {
+if (process.argv[1] && fileURLToPath(import.meta.url) === realpathSync.native(process.argv[1])) {
   try {
     const argv = process.argv.slice(2);
     const command = parseArguments(argv).positional[0];
+    if (command === 'chat') {
+      const { positional } = parseArguments(argv);
+      if (positional.length !== 3) throw Error(usage);
+      const input = ['grant', 'grant-persistent'].includes(positional[1]) ? await readInput() : {};
+      await flushAndExit(process.stdout, `${JSON.stringify(await chatTunnelCommand(positional[1], positional[2], input))}\n`, 0);
+    } else if (command === 'dashboard') {
+      const { registryPath, positional } = parseArguments(argv);
+      if (positional.length !== 1) throw Error(usage);
+      const { server, url } = await startDashboard(new ModuleRegistry({ registryPath: registryPath ?? defaultRegistryPath() }));
+      process.stdout.write(`${JSON.stringify({ url, readOnly: true, loopbackOnly: true })}\n`);
+      for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => server.close(() => process.exit(0)));
+    } else {
     const budgetInput = command === "budget" && ["check", "sync"].includes(parseArguments(argv).positional[1]);
     const result = calls.has(command) ? await invoke(argv, await readInput()) :
       execute(argv, budgetInput ? { input: await readInput() } : {});
     await flushAndExit(process.stdout, `${JSON.stringify(result)}\n`, 0);
+    }
   } catch (error) {
     await flushAndExit(process.stderr, `${error.message}\n`, 1);
   }

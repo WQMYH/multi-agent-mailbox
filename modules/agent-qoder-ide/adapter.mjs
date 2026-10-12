@@ -1,5 +1,7 @@
 import { activateConversation, listInstances, readConfig, readConversationStatus, readIdentity, readMessageOwner,
-  runToolkit, sendCurrentConversation, toolkitCommands } from "./client.mjs";
+  observeMessages, runToolkit, sendCurrentConversation, toolkitCommands } from "./client.mjs";
+import { messageObserveInputSchema, validateMessageObserveArgs, validateMessageObservation }
+  from "./runtime/core-contracts.mjs";
 
 const target = Object.freeze({ id: "qoder-cn-ide", kind: "desktop", label: "Qoder CN IDE" });
 const uuid = { type: "string", pattern: "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$" };
@@ -31,6 +33,8 @@ const definitions = [
   name, description, inputSchema: { type: "object", properties, required, additionalProperties: false },
   annotations: { readOnlyHint }
 }));
+definitions.push({ name: "message_observe", description: "Observe retained IDE page records, persisted evidence and bounded content without recovery, consuming or confirming messages.",
+  inputSchema: messageObserveInputSchema, annotations: { readOnlyHint: true } });
 
 function validate(operation, args) {
   const definition = definitions.find(candidate => candidate.name === operation);
@@ -56,6 +60,11 @@ function validate(operation, args) {
 export async function describe() { return structuredClone(definitions); }
 
 export async function call(operation, args = {}, services = {}) {
+  if (operation === "message_observe") {
+    const input = validateMessageObserveArgs(args);
+    const config = services.config ?? readConfig();
+    return validateMessageObservation(await (services.observeMessages ?? observeMessages)(input, config));
+  }
   validate(operation, args);
   const config = services.config ?? readConfig();
   if (operation === "instances") return { target, instances: (services.listInstances ?? listInstances)(config) };

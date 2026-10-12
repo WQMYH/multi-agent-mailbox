@@ -1,4 +1,6 @@
-# qoder-codex-bridge
+# 小洞 · Post-Qoder-Dong
+
+The compatible package identifier remains `qoder-codex-bridge`.
 
 Qoder CN desktop plugin that relays fixed-template task lifecycle events to a bound
 Codex monitoring task and exposes separate, explicit tools for user-authored messages.
@@ -14,12 +16,156 @@ See [tested scope](../docs/compatibility.md); successful no-tool completed turns
 do not prove every terminal condition or automatic worker rebirth.
 Installed, configured, current-version loaded, and currently usable remain separate
 states; check the live host configuration before relying on the tools.
+The removal of host-config/selection expiry and optional lifecycle expiry in this maintenance candidate is verified offline;
+installation and live transport pickup remain separate acceptance steps.
 
 The initial candidate was authored by Qoder CN; subsequent attribution repairs,
 handler process tests, and the multi-binding phase are maintained by Codex under
 the user's takeover instruction.
 
 ## Layout
+
+### Explicit message receipts (maintenance source, not yet installed)
+
+`select_codex_task` also returns `requestId`: the existing single-use selection/intent
+identity, not a new authorization. Save it before calling `send_codex_message`.
+Send results return this ID, `deliveryId` (`codex:<requestId>`), the existing durable
+store `ownerId`, timestamps and separate owner/provider acceptance facts.
+
+`codex_message_status({"requestId":"<saved UUID>"})` is read-only and reads the same
+bounded `message-<UUID>.json` record. It works without the desktop host connection
+and after an MCP process restart. Existing schema-1 records require no migration;
+the tool never returns their token, message hash or message body.
+
+- `accepted`: native host ACK was recorded; consumer read, turn result and business
+  acceptance remain `unknown`. This is not an end-to-end reply guarantee.
+- `uncertain`: dispatch intent persists without a recorded ACK. Query, do not resend.
+- `not_found`: no committed record was found. This does not prove no external effect.
+- `not_sent`: the current send was refused before native dispatch; a colliding or
+  invalid old record does not become an accepted receipt.
+
+The persisted-receipt view includes `receiptScope: "local_owner_record"` and
+`retryScope: "request"`. `knownStage` is `native_ack_persisted` for an accepted
+record, `dispatch_intent_persisted` for an uncertain record, and `unobserved`
+when no record exists. Its corresponding `reason` is `native_host_ack_recorded`,
+`native_acceptance_unknown`, or `local_receipt_not_found`. Missing local evidence
+does not establish the provider's dispatch history or the cause of a timeout.
+
+`retrySafe` is false for observed messages. Reading does not confirm consumption or
+change records. Repeating a consumed selection cannot execute another send; distinct
+messages to one target retain distinct request/delivery identities. A recent thread
+reply is not automatically attributed to any of them.
+
+The no-replay rule concerns the original request, not all contact with its target.
+A separately authorized new message can use the usual list/select/send flow without
+modifying the old receipt. Reissuing the unknown original under a new selection is
+still a replay, not recovery. These tools cannot withdraw a previously dispatched
+message or certify cancellation; never delete its record or label it canceled to
+permit another send. A human-approved recovery path requires a separate verified
+contract and must preserve the old unknown facts and possible duplicate/late effects.
+
+To request an explicitly associated reply, set `replyRequested: true` on a new send.
+The native prompt then includes a visible `[Post-Core requestId:<UUID>]` envelope,
+the unchanged user text, and a request to start a reply with
+`[Post-Core replyTo:<UUID>]`. This public identifier is correlation data, not a
+permission, credential or authorization to contact another task. The store retains
+only hashes of the user text and dispatched envelope, never their bodies.
+
+With existing read permission, `read_codex` returns native `messageId` and assistant
+`phase` when available. It exposes `replyTo` only for an assistant's explicit prefix
+whose persisted receipt requested a reply to this exact native target. The basis is
+`recipient_report`: a declaration by the receiving assistant, not a native
+turn-to-request guarantee, trusted human authorization, or business acceptance.
+Replies without a prefix, mismatched targets and missing/damaged receipts are not
+associated. Multiple matching replies remain separate native messages; the tool
+does not choose the latest or update consumer/turn acceptance. Old sends stay
+verbatim by default, old records are unchanged, and reading never writes receipts.
+The private-connection accepted event described below is not a correlated reply
+event. An actual Dot round trip remains a separate runtime acceptance gate.
+
+`send_codex_message` accepts optional native `model` (a string) and `thinking`
+(`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, or `ultra`). Omitting them
+keeps the native task settings; the bridge does not select defaults. The host decides
+which models and combinations are available. Intent and status retain these values
+as `requestedExecution`, including an uncertain send, rather than claiming the actual
+model or effort used. Metadata exceeding the existing 65,536-byte readable record
+limit is refused before persistence and dispatch (`not_sent/message_record_too_large`).
+The current native read contract supplies no verified model/effort fields, so thread
+reads expose no inferred execution configuration.
+
+An authorized send can add a follow-up prompt through the existing native send path.
+This is not a dedicated queue, cancellation, or same-turn steer API. Those controls
+are not exposed: HostClient currently permits only list, read, and send. Cancellation
+or explicit steer needs a separately verified native tool and an authorized allowlist
+change; queue ordering needs a real native dispatch/ordering contract.
+
+For an allowed UTF-8 file, `read_codex` returns `contentSha256`, the SHA-256 of the
+whole file's bytes, even when the text is paginated. Pass that value as
+`expectedContentSha256` together with `nextOffset` on subsequent reads to reject a
+changed version before returning text (`file_version_mismatch`). Without the optional
+expected digest, each read returns its current content identity. This adds no file
+snapshot or write: the existing workspace permission, protected paths, link, size
+and stable-read checks still apply, and offsets remain UTF-16 text offsets.
+
+### Private-connection Events (offline source candidate)
+
+Events is disabled unless the trusted operator launcher supplies
+`CODEX_CHAT_EVENTS_PRIVATE_CONNECTION` as exactly
+`{"schemaVersion":1,"kind":"privateConnection","principalId":"<delegated private tunnel>","readSessionId":"<current supervisor session UUID>"}`.
+This is the user's explicit single-user private-connection delegation, not a
+platform-authenticated Dot identity. RPC `_meta`, message bodies, the fixed desktop
+operator ID and the managed-store owner never choose or grant that principal.
+The existing `CODEX_CHAT_READ_CONFIG` / `CODEX_CHAT_READ_SESSION` temporary grant
+and live supervisor must match; persistent mode does not enable this candidate.
+
+The same stdio endpoint supports MCP2 `server/discover` (`2026-07-28`, tools/events),
+`events/list`, `events/subscribe` and `events/unsubscribe`, while preserving legacy
+`initialize`, `tools/list` and `tools/call`. Subscribe to `codex.message.accepted`
+with exact `requestId`/`threadId` arguments and webhook delivery `{mode,url,secret}`.
+The callback must be HTTPS and pass the bounded real challenge. No subscription
+is returned active until shared-store-budgeted atomic persistence also succeeds.
+The stable ID binds the delegated principal, canonical arguments, event and callback
+URL; signing-key rotation replaces its generation, not its identity.
+
+Only a durable native host ACK produces this event. `uncertain` dispatch is never
+resent, and status rereads do not consume messages. The event contains receipt
+metadata only, not prompt text, reply text or file contents. A callback 2xx means
+webhook receipt, not recipient read, correlated reply or business acceptance.
+Transient callback failures permit at most three total attempts with the same event
+ID, newly signed each time. Persisted attempt ownership and a transport-time guard
+stop stale pending sends after unsubscribe, rotation, TTL expiry or grant loss;
+an already-issued network request cannot be recalled.
+
+Subscriptions use `events-subscription-<sha256>.json` in the existing store with
+the same lock, atomic writer and allocation checks; they are not native-message
+records, receipt reservations or a second queue. Signing secrets stay in that
+operator-controlled store and never appear in RPC results or diagnostics. TTL
+defaults to five minutes, is capped there, and `ttlMs:null` remains finite. Native
+child restart rechecks the same session/roots and original TTL and rechallenges
+before sending; it never renews expired or revoked access. Explicit read grants
+can add a thread within that interval, but cannot enlarge workspace roots.
+
+On an explicit user authorization in the chat, the agent can synchronize it by
+calling `select_codex_task` with `grantReadAccess:true`. This is a declared write:
+after verifying the exact native target, it adds only that thread to the current
+temporary allowlist and returns the committed `readAccess` thread/session/mode.
+Omitting the option (or using false) performs no policy write. No configured
+private delegation means no grant. The bridge does not scan conversation text or
+accept a forwarded statement of "user authorization" as permission. The policy
+lock is `<read-policy-path>.lock`, with a unique atomic temporary file; concurrent
+Chat grants and Core operator grant/persistent/revoke writers all use it. The
+operator's explicit replacement or revoke remains authoritative; omitted operator
+scope is reread inside the lock. A held/stale lock reports busy after five seconds
+and is not automatically removed. No OAuth service, additional credential or
+permanent read grant is created.
+Enabling this option requires the paired Core policy-writer revision to be installed
+alongside this candidate; older Core writers do not share the lock. Source tests
+are not proof that the installed pair is present.
+
+Offline checks: `node scripts/mcp-events-runtime-test.mjs`, `node scripts/message-test.mjs`
+and `node scripts/codex-read-test.mjs`. These exercise actual stdio and disk state
+with only DNS/HTTPS I/O replaced. They do not install, configure a real connection,
+make an external callback, send a real message or establish end-to-end completion.
 
 | File | Role |
 |---|---|
@@ -67,9 +213,15 @@ Create a legacy single binding with the original command form, or append a keyed
 binding with `--add`:
 
 ```
-node scripts/configure-binding.mjs <dataDir> <requestId> <workspaceId> <sessionId> <hookSessionId> <cwd> <targetTaskId> <targetCwd> <expiresAt>
-node scripts/configure-binding.mjs --add <dataDir> <requestId> <workspaceId> <sessionId> <hookSessionId> <cwd> <targetTaskId> <targetCwd> <expiresAt> [{"deliveryId":"...","ownerId":"...","correlation":"..."}]
+node scripts/configure-binding.mjs <dataDir> <requestId> <workspaceId> <sessionId> <hookSessionId> <cwd> <targetTaskId> <targetCwd> [expiresAt]
+node scripts/configure-binding.mjs --add <dataDir> <requestId> <workspaceId> <sessionId> <hookSessionId> <cwd> <targetTaskId> <targetCwd> [expiresAt] [associationJson]
 ```
+
+New everyday bindings omit `expiresAt` by default and retain their future-write budget
+reservation without time-based renewal. An explicitly supplied expiry must be a valid
+future date. Historical bindings with an explicit past expiry remain closed; their
+bindings, receipts and send intents are preserved. To supply an association without an
+expiry, pass its JSON object directly after `<targetCwd>` (quote it as one shell argument).
 
 Both command forms use the same binding-registry lock around their entire
 read/validate/write boundary. The legacy create form succeeds only when no registry
@@ -98,6 +250,10 @@ The receiver writes only fixed metadata, rechecks the binding and provider lease
 then claims the recorded receipt under the managed-store lock before a Host send.
 An accepted or uncertain receipt is never resent. One pass handles at most 64
 active bindings in that scope; a larger scope is rejected for operator review.
+Retained history with a valid accepted receipt matching the binding and native fact
+is returned without another observation or send and does not count against that limit.
+Unknown, conflicting or malformed receipts keep the existing bounded, fail-closed path;
+no binding or receipt is deleted to make room.
 This internal export adds no queue, poller, public MCP tool, or user-message send.
 
 One live host configuration acts as the operator transport. Before dispatch, the
@@ -156,24 +312,53 @@ Codex desktop host channel, invoke `/codex-message` or ask Qoder to use:
 1. `list_codex_tasks` to show Codex task IDs, titles, directories, and status. It
    excludes ChatGPT conversations and never returns task history or summaries.
 2. `select_codex_task` with one listed `threadId`. It re-reads that target and returns
-   a selection token valid for five minutes in this MCP process.
+   a single-use internal selection association with no time expiry in this MCP process.
 3. `send_codex_message` with that token, the same `threadId`, and the user's exact
    message. It rechecks the target ID/directory, consumes the token, persists a
    send intent, then calls the desktop `send_message_to_thread` tool once. An
    uncertain result is not retried automatically; a successful result requires an
    accepted host receipt to be durably recorded. The message body is not persisted.
 
+If the user has already authorized sending and supplied the target and exact message,
+perform this flow without asking for confirmation again. Ask only for a missing target
+or message. The compatibility field `selectionToken` is generated internally for
+one send and grants no additional permission. Selections are independent one-shot
+entries in this MCP process; selecting another target does not replace an existing
+entry, and a mismatched send does not consume another entry. At most 256 pending
+selections are retained; a full map rejects new selections explicitly. Entries have
+no time expiry and are lost on an MCP process restart. When the target is already
+authorized and known, the tools can reselect it without another human selection.
+
 These MCP tools are separate from `UserPromptSubmit`/`Stop` Hooks and do not depend
-on a lifecycle `binding.json`. They still require an unexpired `host-config.json`
-whose task and directory are re-read from Codex before every operation. Refresh that
-configuration after the Codex desktop host restarts or its expiry passes; the server
-re-reads it on the next call. No Hook sends user-authored text, and the plugin does
+on a lifecycle `binding.json`. They require a valid connection `host-config.json`
+whose task and directory are re-read from Codex before every operation. This connection
+has no plugin-imposed expiry or periodic authorization renewal. If a Codex desktop
+host restart changes its connection address, update that transport configuration;
+the server re-reads it on the next call. No Hook sends user-authored text, and the plugin does
 not silently pick a target. Qoder's MCP tool permission settings still govern invocation.
 The installed 0.1.8 test verified `${QODER_PLUGIN_ROOT}`, `QODER_PLUGIN_DATA`, MCP
 startup, and cross-task host authorization for this path.
 
-The existing `host-config.json` fields (`script`, `pipePath`, `threadId`, `cwd`,
-`expiresAt`) remain the input contract. The operator supplies the adapter script path
+The stdio server negotiates MCP `2025-06-18` or `2025-11-25`; an unknown requested
+version falls back to `2025-11-25`, rather than claiming support for arbitrary versions.
+Unsupported methods return JSON-RPC `-32601`; without configured private Events,
+this also applies to `server/discover` and the `events/*` methods.
+List/select calls have a 60-second total deadline and do not reread already-listed
+sidebar entries. Send keeps its single-use intent and uncertain/no-replay rules.
+Each request writes a start/end metadata record to stderr: local `call_id`, numeric
+or hashed RPC ID, known method/tool, UTC time, duration and RPC outcome. These are
+RPC diagnostics, not delivery receipts; no arguments, result text, paths, tokens or
+credentials are logged. Tool errors also return `call_id` for local correlation.
+For send/status calls, `input_request_id_sha256` correlates a valid caller-supplied
+UUID; it is not proof of authorization or dispatch. Select/send/status completions
+also record `request_id_sha256` and, when present, `message_state`. Compute SHA-256
+of the exact returned `requestId` to correlate across process restarts without
+logging the single-use selection token. Missing traces or `not_found` still do not
+prove non-delivery or permit replay.
+
+The `host-config.json` connection fields are `script`, `pipePath`, `threadId`, and `cwd`.
+An old `expiresAt` field is ignored; configurations without it are supported.
+The operator supplies the adapter script path
 and a verified current Codex operator task as `threadId`. HostClient starts that script
 without `--interaction-client-id` and passes `params._meta.codexThreadId` on every
 `tools/call`, including reads and sends. The 0.1.5 desktop adapter interprets the old
@@ -248,8 +433,8 @@ the updated adapter path still needs installation and a live read before use.
   silent success. A host ACK that cannot be durably recorded is NOT reported as `notified`. Same
   request/stage re-fires dedup to the prior state and are never re-sent (no auto-resend).
 - Not-dispatched vs unknown (R4): failures strictly *before* the `send_message_to_thread`
-  call — missing/expired/invalid host config (including a pipe path with control characters,
-  refused at load), init, hostRead, expiry, a failed intent-persist, or a synchronous failure to
+  call — missing/invalid host config (including a pipe path with control characters,
+  refused at load), init, hostRead, lifecycle binding expiry, a failed intent-persist, or a synchronous failure to
   construct/spawn the host adapter (reported as `host_spawn_failed` with a redacted message) —
   are all `recorded_not_dispatched` and keep the receipt at `sendState: "recorded"`. This is kept
   distinct from a real transport `recorded_send_uncertain`, which is only reached once a
@@ -265,9 +450,13 @@ the updated adapter path still needs installation and a live read before use.
    Codex MCP return and native Qoder lifecycle return. This Phase 2 multi-binding
    source was subsequently installed and exercised with multiple live sessions/targets;
    the tested scope is recorded in the public compatibility guide.
-2. The current host configuration must be recreated after its expiry or a Codex
-   desktop host restart. Offline tests prove that the same MCP process re-reads a
-   replacement config; they cannot prove the new desktop pipe is live.
+2. Host connections have no plugin-imposed expiry. A Codex desktop host restart may
+   change the connection address and require transport recovery. Offline tests prove
+   that the same MCP process re-reads a replacement config; they cannot prove the new
+   desktop pipe is live. Native host permissions still apply. New request-level lifecycle
+   bindings have no expiry by default and retain unused request budget reservations.
+   Legacy explicit expiry still stops late notifications and releases unused reservation;
+   it is not evidence that the request completed. Historical expired routes are not revived.
 3. The mapping between the desktop `sessionId` (UUID) and the hook `session_id` that is
    recorded as `binding.hookSessionId` — must be observed and bound by the operator.
 4. One selected-task message was verified. Broader target availability still depends
@@ -298,3 +487,13 @@ the updated adapter path still needs installation and a live read before use.
 
 Downloading or running the offline tests does not install the plugin, refresh
 binding/config files, restart either desktop app, or send a real message.
+
+## Local creation in 小元
+
+The operator-configured Chat service supports `list_codex_projects` → an explicit
+local target → `create_codex_task`, or direct projectless creation, with
+`codex_task_status` for the retained request receipt. These tools are absent from
+the default Qoder service. See [Chat access and local creation](READ-ONLY-CHAT.md)
+for input, one-shot dispatch, budget and ready/preparing boundaries. Installation,
+actual native task visibility and the initial prompt's execution remain separate
+acceptance steps.

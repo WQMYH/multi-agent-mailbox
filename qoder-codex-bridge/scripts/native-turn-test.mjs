@@ -1,24 +1,24 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { tmpdir } from "node:os";
 import { createBinding, addBinding } from "./configure-binding.mjs";
-import { loadBinding } from "./event-recorder.mjs";
-import { storeOwnerId } from "./store-budget.mjs";
+import { loadBinding, validReceiptShape } from "./event-recorder.mjs";
+import { managedStoreStatus, storeOwnerId } from "./store-budget.mjs";
 import { reconcileVerifiedReturns } from "./native-turn-return.mjs";
 import { handle } from "../hooks/handler.mjs";
 
 const root = mkdtempSync(join(tmpdir(), "qoder-codex-bridge-"));
 const here = dirname(fileURLToPath(import.meta.url));
 const workspaceId = "96003604-76a9-400e-9e50-c7b752977391";
-const sessionId = "78d8fae4-1436-458a-b9c3-96ab1730f3ae";
+const sessionId = "00000000-0000-4000-8000-000000000020";
 const ownerId = "qoder.queue.owner";
 const expiresAt = "2030-01-01T00:00:00Z";
 const requestA = "request-A", requestB = "request-B";
-const targetA = "01a0b7c0-d0fa-79f3-a566-558eb6f489fc";
-const targetB = "01a0b73a-1f26-7b73-bbfe-2dbc4c9bc3d4";
+const targetA = "00000000-0000-4000-8000-000000000030";
+const targetB = "00000000-0000-4000-8000-000000000040";
 const source = join(root, "source"), targetDirA = join(root, "target-A"), targetDirB = join(root, "target-B");
 mkdirSync(source); mkdirSync(targetDirA); mkdirSync(targetDirB);
 const scope = { ownerId, workspaceId, canonicalCwd: realpathSync.native(source) };
@@ -67,7 +67,7 @@ function fixture(name) {
 }
 function bind(dir, requestId, targetTaskId, deliveryId) {
   return addBinding(dir, requestId, workspaceId, sessionId, sessionId, source, targetTaskId,
-    targetTaskId === targetA ? targetDirA : targetDirB, expiresAt,
+    targetTaskId === targetA ? targetDirA : targetDirB, undefined,
     { ownerId, deliveryId, correlation: "native-turn", returnMode: "native_turn" });
 }
 function fact(binding) {
@@ -121,8 +121,78 @@ async function waitFor(predicate) {
 }
 
 try {
+  // Retained, delivered history must not exhaust the limit for new live work.
+  const history = fixture("accepted-history"); host(history);
+  const historyBindings = Array.from({ length: 64 }, (_, i) => bind(history, `history-${i + 1}`, targetA, `delivery-history-${i + 1}`));
+  const historyFacts = Object.fromEntries(historyBindings.map(b => [b.requestId, fact(b)]));
+  const beforeHistory = sent().length;
+  const delivered = await reconcileVerifiedReturns({ dataDir: history, scope, observeTurn: observe(historyFacts), assertActive: active });
+  assert.equal(delivered.length, 64);
+  assert(delivered.every(result => result.state === "accepted"));
+  assert.equal(sent().length, beforeHistory + 64);
+  const historyBytes = Object.fromEntries(historyBindings.map(b => {
+    assert(validReceiptShape(receipt(history, b.requestId)));
+    return [b.requestId, readFileSync(join(history, `receipt-verified_turn_result-${b.requestId}.json`), "utf8")];
+  }));
+  const next = bind(history, "history-65", targetB, "delivery-history-65");
+  const historyBudget = managedStoreStatus(history);
+  assert(historyBudget.usedBytes < historyBudget.allocatedBytes);
+  const observedHistory = [];
+  const nextResult = await reconcileVerifiedReturns({ dataDir: history, scope,
+    observeTurn: async ({ requestId }) => { observedHistory.push(requestId); return requestId === next.requestId ? fact(next) : historyFacts[requestId]; },
+    assertActive: active });
+  assert.deepEqual(observedHistory, [next.requestId]);
+  assert.equal(nextResult.find(result => result.requestId === next.requestId).state, "accepted");
+  assert.equal(sent().length, beforeHistory + 65);
+  assert.equal(sent().filter(message => message.threadId === targetB).length, 1);
+  assert(validReceiptShape(receipt(history, next.requestId)));
+  assert.equal(receipt(history, next.requestId).identity.targetTaskId, targetB);
+  assert.equal(receipt(history, next.requestId).event.data.deliveryId, next.deliveryId);
+  historyBytes[next.requestId] = readFileSync(join(history, `receipt-verified_turn_result-${next.requestId}.json`), "utf8");
+  const registryBytes = readFileSync(join(history, "binding.json"), "utf8");
+  let historyObservations = 0;
+  const historical = await reconcileVerifiedReturns({ dataDir: history, scope,
+    observeTurn: async () => { historyObservations++; return null; }, assertActive: active });
+  assert.equal(historical.length, 65);
+  assert(historical.every(result => result.state === "accepted"));
+  assert.equal(historyObservations, 0);
+  assert.equal(sent().length, beforeHistory + 65);
+  for (const [id, bytes] of Object.entries(historyBytes))
+    assert.equal(readFileSync(join(history, `receipt-verified_turn_result-${id}.json`), "utf8"), bytes);
+  assert.equal(readFileSync(join(history, "binding.json"), "utf8"), registryBytes);
+  console.log("QTC-01: 64 delivered histories + request 65 accepted once; 65 histories repeat with 0 observations/0 sends and unchanged records");
+
+  // An accepted label alone must not bypass receipt integrity or binding identity.
+  const nextPath = join(history, `receipt-verified_turn_result-${next.requestId}.json`);
+  const nextReceipt = JSON.parse(historyBytes[next.requestId]);
+  for (const [changed, expected] of [
+    [{ ...nextReceipt, identity: { ...nextReceipt.identity, targetCwd: targetDirA } }, "identity_conflict"],
+    [{ ...nextReceipt, event: { ...nextReceipt.event, data: { ...nextReceipt.event.data, deliveryId: "wrong-delivery" } } }, "native_fact_conflict"],
+    [{ ...nextReceipt, sent: false }, "existing_receipt_malformed"]
+  ]) {
+    writeFileSync(nextPath, JSON.stringify(changed));
+    const changedBytes = readFileSync(nextPath, "utf8"), seen = [];
+    const rejected = await reconcileVerifiedReturns({ dataDir: history, scope,
+      observeTurn: async ({ requestId }) => { seen.push(requestId); return fact(next); }, assertActive: active });
+    assert.deepEqual(seen, [next.requestId]);
+    assert.equal(rejected.find(result => result.requestId === next.requestId).state, expected);
+    assert.equal(sent().length, beforeHistory + 65);
+    assert.equal(readFileSync(nextPath, "utf8"), changedBytes);
+    writeFileSync(nextPath, historyBytes[next.requestId]);
+  }
+
+  const overflow = fixture("live-limit"); host(overflow);
+  for (let i = 1; i <= 65; i++) bind(overflow, `pending-${i}`, targetA, `delivery-pending-${i}`);
+  let overflowObserved = 0;
+  await assert.rejects(reconcileVerifiedReturns({ dataDir: overflow, scope,
+    observeTurn: async () => { overflowObserved++; return null; }, assertActive: active }), /exceeds one bounded reconcile pass/);
+  assert.equal(overflowObserved, 0);
+  assert.equal(sent().length, beforeHistory + 65);
+  assert(!existsSync(join(overflow, "receipt-verified_turn_result-pending-1.json")));
+
   const dir = fixture("two-requests"); host(dir);
   const a = bind(dir, requestA, targetA, "delivery-A");
+  assert.equal(Object.hasOwn(a, "expiresAt"), false);
   const b = bind(dir, requestB, targetB, "delivery-B");
   assert.throws(() => bind(dir, requestA, targetB, "delivery-remap"), e => e.code === "binding_request_exists");
   assert.throws(() => loadBinding(dir, { requestId: requestA, hookSessionId: sessionId, cwd: source }), e => e.code === "host_binding_ambiguous");
@@ -151,8 +221,8 @@ try {
   assert.equal((await reconcileVerifiedReturns({ dataDir: dir, scope, observeTurn: observe({ [requestA]: fact(a), [requestB]: fact(b) }), assertActive: active }))[0].state, "accepted");
   assert.equal(sent().length, before + 2);
   assert.equal((await reconcileVerifiedReturns({ dataDir: dir, scope,
-    observeTurn: observe({ [requestA]: { ...fact(a), assistantId: "assistant:other" }, [requestB]: fact(b) }),
-    assertActive: active }))[0].state, "native_fact_conflict");
+    observeTurn: async () => { throw Error("delivered history must not be observed again"); },
+    assertActive: active }))[0].state, "accepted");
   assert.equal(sent().length, before + 2);
 
   const recover = fixture("recover"); const r = bind(recover, "request-recover", targetA, "delivery-recover");
@@ -176,8 +246,19 @@ try {
   assert.equal((await worker(unknown, { [u.requestId]: fact(u) }))[0].state, "send_uncertain");
   assert.equal(sent().length, beforeUnknown + 1);
   rmSync(join(root, "host-lost-ack"));
+  const uncertainBytes = readFileSync(join(unknown, `receipt-verified_turn_result-${u.requestId}.json`), "utf8");
   assert.equal((await worker(unknown, { [u.requestId]: fact(u) }))[0].state, "uncertain");
   assert.equal(sent().length, beforeUnknown + 1);
+  assert.equal(readFileSync(join(unknown, `receipt-verified_turn_result-${u.requestId}.json`), "utf8"), uncertainBytes);
+  const oldUnknownReceipt = readFileSync(join(unknown, `receipt-verified_turn_result-${u.requestId}.json`), "utf8");
+  const unknownDocument = JSON.parse(readFileSync(join(unknown, "binding.json"), "utf8"));
+  unknownDocument.bindings[0].expiresAt = "2000-01-01T00:00:00Z";
+  writeFileSync(join(unknown, "binding.json"), JSON.stringify(unknownDocument));
+  const oldUnknownBinding = readFileSync(join(unknown, "binding.json"), "utf8");
+  assert.deepEqual(await worker(unknown, { [u.requestId]: fact(u) }), []);
+  assert.equal(sent().length, beforeUnknown + 1);
+  assert.equal(readFileSync(join(unknown, `receipt-verified_turn_result-${u.requestId}.json`), "utf8"), oldUnknownReceipt);
+  assert.equal(readFileSync(join(unknown, "binding.json"), "utf8"), oldUnknownBinding);
 
   const legacy = fixture("legacy");
   const old = createBinding(legacy, "legacy-request", workspaceId, sessionId, sessionId, source, targetA, targetDirA, expiresAt);
@@ -191,7 +272,13 @@ try {
   const document = JSON.parse(readFileSync(join(expired, "binding.json"), "utf8"));
   document.bindings[0].expiresAt = "2000-01-01T00:00:00Z";
   writeFileSync(join(expired, "binding.json"), JSON.stringify(document));
-  assert.deepEqual(await reconcileVerifiedReturns({ dataDir: expired, scope, observeTurn: observe({ [e.requestId]: fact(e) }), assertActive: active }), []);
+  const expiredBytes = readFileSync(join(expired, "binding.json"), "utf8"), beforeExpired = sent().length;
+  let expiredObserved = 0;
+  assert.deepEqual(await reconcileVerifiedReturns({ dataDir: expired, scope,
+    observeTurn: async () => { expiredObserved++; return fact(e); }, assertActive: active }), []);
+  assert.equal(expiredObserved, 0);
+  assert.equal(sent().length, beforeExpired);
+  assert.equal(readFileSync(join(expired, "binding.json"), "utf8"), expiredBytes);
 
   const observation = fixture("observation-isolation"); host(observation);
   const observedA = bind(observation, "observe-A", targetA, "delivery-observe-A");

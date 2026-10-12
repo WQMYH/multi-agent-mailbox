@@ -4,6 +4,8 @@
       "command": "node",
       "args": ["./src/mcp-server.mjs"],
       "cwd": ".",
+      "env": { "AGENT_CORE_UI": "1" },
+      "env_vars": ["CODEX_APP_TOOLS_PIPE_PATH"],
       "enabled": true,
       "startup_timeout_sec": 30,
       "tool_timeout_sec": 120,
@@ -11,6 +13,7 @@
       "tools": {
         "agent_discover": { "approval_mode": "auto" },
         "agent_read": { "approval_mode": "auto" },
+        "agent_mailboard": { "approval_mode": "auto" },
         "agent_act": { "approval_mode": "prompt" }
       }
     }

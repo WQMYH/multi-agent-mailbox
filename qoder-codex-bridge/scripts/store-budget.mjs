@@ -39,7 +39,8 @@ export function messageReservationBytes(intent) {
 function managedName(name) {
   return name === ".message-store.lock"
     || /^binding\.json(?:$|\.lock$|\..+\.tmp$)/.test(name)
-    || /^(?:receipt|submission|message)-/.test(name);
+    || /^events-subscription-[0-9a-f]{64}\.json(?:$|\.\d+\.[0-9a-f-]{36}\.tmp$)/.test(name)
+    || /^(?:receipt|submission|message|create)-/.test(name);
 }
 
 function managedPath(root, path) {
@@ -145,12 +146,13 @@ function bindingRecords(root) {
 function usage(root, now = Date.now()) {
   let physicalBytes = 0;
   const requestBytes = new Map();
-  const messageFiles = [];
+  const messageFiles = [], createFiles = [];
   for (const entry of readdirSync(root, { withFileTypes: true })) {
     if (!entry.isFile() || !managedName(entry.name)) continue;
     const path = join(root, entry.name), size = statSync(path).size;
     physicalBytes += size;
     if (entry.name.startsWith("message-")) messageFiles.push({ path, size });
+    if (entry.name.startsWith("create-")) createFiles.push({ path, size });
     if (entry.name.startsWith("receipt-") || entry.name.startsWith("submission-")) {
       const parsed = readJson(path);
       const requestId = parsed?.identity?.requestId ?? parsed?.event?.requestId ?? parsed?.requestId;
@@ -161,7 +163,8 @@ function usage(root, now = Date.now()) {
   if (bindings === null) throw fail("store_binding_unreadable", "Binding data is unreadable; existing data was preserved");
   const remainingByKey = new Map(); let reservedBytes = 0;
   for (const binding of bindings) {
-    if (!binding || typeof binding !== "object" || !Number.isFinite(Date.parse(binding.expiresAt)) || Date.parse(binding.expiresAt) <= now) continue;
+    if (!binding || typeof binding !== "object") continue;
+    if (binding.expiresAt !== undefined && (typeof binding.expiresAt !== "string" || !Number.isFinite(Date.parse(binding.expiresAt)) || Date.parse(binding.expiresAt) <= now)) continue;
     const reserve = bindingReservationBytes(binding);
     const remaining = Math.max(0, reserve - (requestBytes.get(binding.requestId) ?? 0));
     remainingByKey.set(`request:${binding.requestId}`, remaining);
@@ -181,6 +184,12 @@ function usage(root, now = Date.now()) {
     const remaining = Math.max(0, messageReservationBytes(group.intent) - group.physicalBytes);
     remainingByKey.set(`message:${token}`, remaining);
     reservedBytes += remaining;
+  }
+  for (const { path, size } of createFiles) {
+    const record = readJson(path);
+    if (record?.kind !== "local_codex_task_creation" || record.state !== "dispatch_intent" || typeof record.requestId !== "string") continue;
+    const remaining = Math.max(0, messageReservationBytes(record) - size);
+    remainingByKey.set(`create:${record.requestId}`, remaining); reservedBytes += remaining;
   }
   return { physicalBytes, reservedBytes, usedBytes: physicalBytes + reservedBytes, remainingByKey };
 }

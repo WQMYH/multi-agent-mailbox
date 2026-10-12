@@ -5,7 +5,7 @@
     {
       "name": "zcode-codex-bridge",
       "source": "./plugin",
-      "description": "Bounded status and result notifications for one existing Codex task",
+      "description": "小折 · Post-Zcode-Zhe — bounded status and result notifications for one existing Codex task",
       "version": "0.3.1",
       "category": "developer-tools",
       "strict": true

@@ -9,19 +9,22 @@ import { queueOwnerId } from './desktop.mjs';
 import { ModuleRegistry } from '../agent-core/src/registry.mjs';
 
 test('domain boundaries and durable uncertain-send reservation, no live calls',async()=>{
-  const description=await describe();assert.equal(description.length,12);
-  const identity=description.find(operation=>operation.name==='identity');identity.annotations.readOnlyHint=false;
-  assert.equal((await describe()).find(operation=>operation.name==='identity').annotations.readOnlyHint,true);
-  for(const [op,args] of [['eval',{}],['list_tasks',{limit:101}],['models',{script:'bad'}],['search_task',{sessionId:'bad',query:'x'}],['send',{}],['send_new_session',{}]])await assert.rejects(call(op,args));
-  for(const args of [{constructor:'extra'},JSON.parse('{"__proto__":{"extra":true}}')])await assert.rejects(call('identity',args),/Unknown argument/);
-  const names=['QODER_DESKTOP_CDP_PORT','QODER_CONTROL_WORKSPACE_ID','QODER_CONTROL_ROOT','QODER_DELIVERY_DIR','USERPROFILE','HOME'];
+  const names=['QODER_CLI_EXECUTABLE','QODER_DESKTOP_CDP_PORT','QODER_CONTROL_WORKSPACE_ID','QODER_CONTROL_ROOT','QODER_DELIVERY_DIR','USERPROFILE','HOME'];
   const saved=Object.fromEntries(names.map(k=>[k,process.env[k]]));
   const directory=await mkdtemp(join(tmpdir(),'qoder-delivery-test-'));
   try{
     process.env.USERPROFILE=directory;process.env.HOME=directory;
+    delete process.env.QODER_CLI_EXECUTABLE;
     delete process.env.QODER_DESKTOP_CDP_PORT;
     process.env.QODER_CONTROL_WORKSPACE_ID='f7e9fc37-179d-4893-ada5-fb2464f38273';
     process.env.QODER_CONTROL_ROOT=directory;process.env.QODER_DELIVERY_DIR=directory;
+    const discovery={desktopCapabilities:async()=>['identity']};
+    const description=await describe(discovery);
+    assert.equal(description.find(operation=>operation.name==='message_observe').annotations.readOnlyHint,true);
+    const identity=description.find(operation=>operation.name==='identity');identity.annotations.readOnlyHint=false;
+    assert.equal((await describe(discovery)).find(operation=>operation.name==='identity').annotations.readOnlyHint,true);
+    for(const [op,args] of [['eval',{}],['list_tasks',{limit:101}],['models',{script:'bad'}],['search_task',{sessionId:'bad',query:'x'}],['send',{}],['send_new_session',{}]])await assert.rejects(call(op,args));
+    for(const args of [{constructor:'extra'},JSON.parse('{"__proto__":{"extra":true}}')])await assert.rejects(call('identity',args),/Unknown argument/);
     const ownerId=queueOwnerId({deliveryDir:directory});
     const services={messageBudget:{status:()=>({schemaVersion:1,totalBytes:20_000_000,allocations:[{ownerId,bytes:20_000_000}]}),
       check:({usedBytes,additionalBytes=0})=>({ok:usedBytes+additionalBytes<=20_000_000,ownerId,allocatedBytes:20_000_000,usedBytes,additionalBytes,projectedBytes:usedBytes+additionalBytes,remainingBytes:20_000_000-usedBytes-additionalBytes,deltaBytes:0})},
@@ -48,19 +51,28 @@ test('domain boundaries and durable uncertain-send reservation, no live calls',a
     assert.equal(correlatedDuplicate.messageReceipt.requestId,correlated.requestId);
     assert.equal(correlatedDuplicate.messageReceipt.deliveryId,`qoder-delivery:${correlated.requestId}`);
     assert.equal(correlatedDuplicate.messageReceipt.target.address,correlated.sessionId);
+    const observed=await call('message_observe',{view:'stats'},services);
+    assert.equal(observed.stats.total,2);assert.equal(observed.moduleId,'agent-qoder');
+    await assert.rejects(call('message_observe',{view:'detail'},services),/requires/);
     assert.deepEqual((await call('recover_queue',{},services)).worker,{status:'started',pid:123});
   }finally{for(const k of names){if(saved[k]===undefined)delete process.env[k];else process.env[k]=saved[k];}await rm(directory,{recursive:true,force:true});}
 });
 
 test('v1 core discovers the real module and enforces read/write separation in an isolated registry',async()=>{
   const directory=await mkdtemp(join(tmpdir(),'qoder-registry-test-'));
+  const keys=['HOME','USERPROFILE',...Object.keys(process.env).filter(key=>key.startsWith('QODER_'))];
+  const saved=Object.fromEntries(keys.map(key=>[key,process.env[key]]));
   try{
+    for(const key of keys)if(key.startsWith('QODER_'))delete process.env[key];
+    process.env.HOME=directory;process.env.USERPROFILE=directory;
     const registry=new ModuleRegistry({registryPath:join(directory,'registry.json')});
     registry.install(fileURLToPath(new URL('.',import.meta.url)));
-    const found=await registry.agentDiscover({moduleId:'agent-qoder'});assert.equal(found.operations.length,12);
-    await assert.rejects(registry.agentRead({moduleId:'agent-qoder',operation:'send',args:{}}),/mutating/);
-    await assert.rejects(registry.agentAct({moduleId:'agent-qoder',operation:'identity',args:{}}),/read-only/);
-    registry.disable('agent-qoder');await assert.rejects(registry.agentRead({moduleId:'agent-qoder',operation:'identity'}),/disabled/);
+    const found=await registry.agentDiscover({moduleId:'agent-qoder'});
+    assert.deepEqual(found.operations.map(operation=>operation.name).sort(),['launch','message_observe','queue_status','recover_queue'].sort());
+    assert.equal(found.operations.find(operation=>operation.name==='message_observe').annotations.readOnlyHint,true);
+    await assert.rejects(registry.agentRead({moduleId:'agent-qoder',operation:'recover_queue',args:{}}),/mutating/);
+    await assert.rejects(registry.agentAct({moduleId:'agent-qoder',operation:'message_observe',args:{view:'stats'}}),/read-only/);
+    registry.disable('agent-qoder');await assert.rejects(registry.agentRead({moduleId:'agent-qoder',operation:'message_observe'}),/disabled/);
     registry.uninstall('agent-qoder');assert.equal((await registry.agentDiscover()).modules.length,0);
-  }finally{await rm(directory,{recursive:true,force:true});}
+  }finally{for(const key of keys){if(saved[key]===undefined)delete process.env[key];else process.env[key]=saved[key];}await rm(directory,{recursive:true,force:true});}
 });

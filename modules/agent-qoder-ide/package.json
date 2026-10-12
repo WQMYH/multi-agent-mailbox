@@ -4,5 +4,5 @@
   "private": true,
   "type": "module",
   "engines": { "node": ">=24" },
-  "scripts": { "test": "node adapter.test.mjs" }
+  "scripts": { "build": "node build.mjs", "test": "node build.mjs && node adapter.test.mjs" }
 }

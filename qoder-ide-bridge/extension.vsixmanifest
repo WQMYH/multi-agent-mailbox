@@ -2,7 +2,7 @@
 <PackageManifest Version="2.0.0" xmlns="http://schemas.microsoft.com/developer/vsx-schema/2011" xmlns:d="http://schemas.microsoft.com/developer/vsx-schema-design/2011">
   <Metadata>
     <Identity Language="en-US" Id="qoder-ide-command-bridge" Version="0.2.0" Publisher="wqmyh" />
-    <DisplayName>Qoder IDE Command Bridge</DisplayName>
+    <DisplayName>小洞 IDE · Post-Qoder-Dong</DisplayName>
     <Description xml:space="preserve">Authenticated local command bridge for an explicit Qoder CN IDE instance and workspace.</Description>
     <Categories>Other</Categories>
     <Properties>
