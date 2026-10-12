@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, readFileSync, rmSync, mkdirSync, symlinkSync, existsSync, unlinkSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, rmSync, mkdirSync, symlinkSync, existsSync, unlinkSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
 import { ensureTunnel, tunnelStatus, stopTunnel, configureReadAccess, chatTunnelCommand } from '../src/chat-tunnel.mjs';
@@ -8,7 +8,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { grantTemporaryThreadRead, loadReadPolicy } from '../../../qoder-codex-bridge/scripts/codex-read.mjs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-const root = mkdtempSync(join(tmpdir(), 'chat-tunnel-test-'));
+const root = realpathSync.native(mkdtempSync(join(tmpdir(), 'chat-tunnel-test-')));
 const configPath = join(root, 'config.json'), policyPath = join(root, 'read.json'), profile = join(root, 'profile.json');
 const starts = join(root, 'starts.jsonl'), healthFile = join(root, 'health.url');
 const scope = { threadIds: ['aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'], workspaceRoots: [root] };
@@ -148,6 +148,6 @@ fs.readFileSync=function(path,...args){const result=read.call(this,path,...args)
 } finally {
   if (oldNodeOptions === undefined) delete process.env.NODE_OPTIONS; else process.env.NODE_OPTIONS = oldNodeOptions;
   await stopTunnel(configPath);
-  assert.equal(dirname(root), resolve(tmpdir()));
+  assert.equal(dirname(root), realpathSync.native(tmpdir()));
   rmSync(root, { recursive: true, force: true });
 }

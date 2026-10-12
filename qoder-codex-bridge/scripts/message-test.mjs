@@ -10,8 +10,8 @@ import { storeOwnerId } from "./store-budget.mjs";
 import { createServer } from "node:http";
 import { randomUUID, createHash } from "node:crypto";
 
-const root = fs.mkdtempSync(join(tmpdir(), "qoder-codex-bridge-"));
-const rel = relative(resolve(tmpdir()), resolve(root));
+const root = fs.realpathSync.native(fs.mkdtempSync(join(tmpdir(), "qoder-codex-bridge-")));
+const rel = relative(fs.realpathSync.native(tmpdir()), root);
 assert(rel.startsWith("qoder-codex-bridge-") && !rel.includes("/") && !rel.includes("\\") && !isAbsolute(rel));
 const children = new Set();
 const requestId = "11111111-2222-3333-4444-555555555555";

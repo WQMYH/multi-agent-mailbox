@@ -1,13 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { desktop, queueOwnerId } from './desktop.mjs';
 
 test('message observation is scoped, paged and read-only, preserving unknowns and exact prompt text', async t => {
-  const root = mkdtempSync(join(tmpdir(), 'qoder-observe-'));
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), 'qoder-observe-')));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const directory = join(root, 'delivery'); mkdirSync(directory);
   const config = { root, deliveryDir: directory, workspaceId: '11111111-1111-4111-8111-111111111111', token: 'fixture-config-secret' };

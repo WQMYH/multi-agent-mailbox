@@ -9,10 +9,10 @@ import { randomUUID, createHash } from "node:crypto";
 import { fileURLToPath, pathToFileURL } from "node:url";
 const { grantTemporaryThreadRead, loadReadPolicy, readCodex, verifyReadSession } = await import(process.argv[2] ? pathToFileURL(resolve(process.argv[2])).href : './codex-read.mjs');
 
-const root = fs.mkdtempSync(join(tmpdir(), "codex-read-test-"));
-assert.equal(dirname(root), resolve(tmpdir()));
-assert(relative(resolve(tmpdir()), root).startsWith("codex-read-test-"));
-assert(!isAbsolute(relative(resolve(tmpdir()), root)));
+const root = fs.realpathSync.native(fs.mkdtempSync(join(tmpdir(), "codex-read-test-")));
+assert.equal(dirname(root), fs.realpathSync.native(tmpdir()));
+assert(relative(fs.realpathSync.native(tmpdir()), root).startsWith("codex-read-test-"));
+assert(!isAbsolute(relative(fs.realpathSync.native(tmpdir()), root)));
 const workspace = join(root, "workspace"), outside = join(root, "outside"), data = join(root, "data");
 for (const dir of [workspace, outside, data]) fs.mkdirSync(dir);
 const id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", other = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
@@ -218,7 +218,7 @@ process.stdout.write(JSON.stringify({jsonrpc:"2.0",id:m.id,result})+"\\n");});`)
   for (const child of children) child.kill();
   if (oldSession === undefined) delete process.env.CODEX_CHAT_READ_SESSION; else process.env.CODEX_CHAT_READ_SESSION = oldSession;
   await new Promise(done => owner.close(done));
-  assert.equal(dirname(root), resolve(tmpdir()));
-  assert(relative(resolve(tmpdir()), root).startsWith("codex-read-test-"));
+  assert.equal(dirname(root), fs.realpathSync.native(tmpdir()));
+  assert(relative(fs.realpathSync.native(tmpdir()), root).startsWith("codex-read-test-"));
   fs.rmSync(root, { recursive: true, force: true });
 }

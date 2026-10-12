@@ -49,7 +49,7 @@ function fixture(t) {
     receiverId, transport: 'claude-peer', sessionId: receiverId === 'desktop'
       ? 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' : 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', cwd: root, home })) }));
   const invoke = (operation, args) => call(operation, args, context);
-  const rows = sql => { const db = new DatabaseSync(dbPath, { readOnly: true }); try { return db.prepare(sql).all(); } finally { db.close(); } };
+  const rows = sql => { const db = new DatabaseSync(dbPath, { readOnly: true }); try { db.exec('PRAGMA busy_timeout=5000'); return db.prepare(sql).all(); } finally { db.close(); } };
   return { root, home, configPath, dbPath, ownerId, budget, context, notices, reachable, configure, invoke, rows, cleanup };
 }
 

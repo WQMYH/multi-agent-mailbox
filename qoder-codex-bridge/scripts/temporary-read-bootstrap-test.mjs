@@ -8,7 +8,7 @@ import { createServer } from 'node:http';
 import { createInterface } from 'node:readline';
 import { spawn } from 'node:child_process';
 
-const root = fs.mkdtempSync(join(tmpdir(), 'temporary-read-bootstrap-'));
+const root = fs.realpathSync.native(fs.mkdtempSync(join(tmpdir(), 'temporary-read-bootstrap-')));
 const data = join(root, 'data'), workspace = join(root, 'workspace'), stateDir = join(root, 'state');
 for (const dir of [data, workspace, stateDir]) fs.mkdirSync(dir);
 const oldThread = randomUUID(), target = randomUUID(), second = randomUUID(), sessionId = randomUUID();
@@ -116,5 +116,5 @@ try {
 } finally {
   for (const child of [...children]) { const ended = new Promise(done => child.once('exit', done)); child.kill(); await ended; }
   await new Promise(done => owner.close(done));
-  assert.equal(dirname(root), resolve(tmpdir())); fs.rmSync(root, { recursive: true, force: true });
+  assert.equal(dirname(root), fs.realpathSync.native(tmpdir())); fs.rmSync(root, { recursive: true, force: true });
 }
