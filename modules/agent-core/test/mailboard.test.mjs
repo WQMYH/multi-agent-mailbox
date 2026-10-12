@@ -53,6 +53,7 @@ async function mcp(f, messages, ui = '1', capabilities = { extensions: { 'io.mod
   try {
     await new Promise((resolve, reject) => {
       child.on('error', reject);
+      child.stdin.on('error', reject);
       child.stderr.on('data', chunk => { stderr += chunk; });
       child.on('close', code => {
         try { assert.equal(code, 0, stderr); assert.equal(replies.length, messages.length + 1); resolve(); }
@@ -63,6 +64,7 @@ async function mcp(f, messages, ui = '1', capabilities = { extensions: { 'io.mod
         try {
           const reply = JSON.parse(line);
           if (!Object.hasOwn(reply, 'id')) return;
+          if (reply.id === 0) child.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) + '\n');
           replies.push(reply); next();
         } catch (error) { child.kill(); reject(error); }
       });
