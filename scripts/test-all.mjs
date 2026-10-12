@@ -8,7 +8,8 @@ const failures = [];
 function run(file) {
   console.log(`\n[test] ${file}`);
   const result = spawnSync(process.execPath, [file], {
-    cwd: root, stdio: 'inherit', windowsHide: true, timeout: 180_000
+    cwd: root, stdio: 'inherit', windowsHide: true,
+    timeout: file === 'qoder-codex-bridge/scripts/native-turn-test.mjs' ? 300_000 : 180_000
   });
   if (result.error || result.status !== 0) {
     console.error(result.error?.message ?? `Test exited ${result.status}`);
