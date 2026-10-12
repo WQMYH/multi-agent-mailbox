@@ -119,7 +119,7 @@ export async function processIdentity(pid) {
   try {
     const { stdout } = await execute('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
       `$nativeProcess = Get-Process -Id ${pid} -ErrorAction Stop; [pscustomobject]@{ startFt = $nativeProcess.StartTime.ToFileTimeUtc().ToString(); startMs = [DateTimeOffset]::new($nativeProcess.StartTime.ToUniversalTime()).ToUnixTimeMilliseconds() } | ConvertTo-Json -Compress`],
-    { timeout: 5000, maxBuffer: 4096, windowsHide: true });
+    { timeout: 10000, maxBuffer: 4096, windowsHide: true });
     const result = JSON.parse(stdout);
     return typeof result.startFt === 'string' && /^\d{17,20}$/.test(result.startFt) && Number.isSafeInteger(result.startMs) ? result : null;
   } catch { return null; }
