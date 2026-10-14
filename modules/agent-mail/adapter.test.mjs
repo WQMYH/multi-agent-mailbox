@@ -248,6 +248,47 @@ test('CLI and MCP share the Core route; inbox is byte-for-byte read-only', async
   assert.notEqual(fresh.value.results[0].deliveryId, sent.value.results[0].deliveryId);
 });
 
+test('message observation pages retained content, confirmation and statistics without consuming or writing', async t => {
+  const f = fixture(t), malicious = '<img src=x onerror="globalThis.executed=true"><script>globalThis.executed=true</script>';
+  const first = await f.act('send', { ...sendArgs('observe-1', ['alpha'], malicious), correlation: 'linked' });
+  await f.act('send', { ...sendArgs('observe-2', ['alpha'], 'x'.repeat(5000)), correlation: 'linked' });
+  await f.act('send', { ...sendArgs('observe-3', ['beta'], 'other scope'), correlation: 'other' });
+  const fetched = await f.act('confirm_and_fetch', { target: target('alpha'), consumerId: 'reader-a', limit: 1 });
+  await f.act('confirm_and_fetch', { target: target('alpha'), consumerId: 'reader-a',
+    ack: { batchId: fetched.batch.batchId, deliveryIds: fetched.batch.deliveryIds }, limit: 1 });
+  const snapshot = () => Object.fromEntries(readdirSync(join(f.root, 'mail')).sort()
+    .map(name => [name, readFileSync(join(f.root, 'mail', name)).toString('base64')]));
+  const before = snapshot();
+  const page = await f.read('message_observe', { view: 'items', limit: 1, correlation: 'linked' });
+  assert.equal(page.items.length, 1); assert.equal(page.hasMore, true);
+  assert.equal(page.items[0].content.text, malicious);
+  assert.equal(page.items[0].evidence.providerAccepted, 'unknown');
+  assert.equal(page.items[0].evidence.consumerConfirmed, false, 'reader-b has not confirmed');
+  const next = await f.read('message_observe', { view: 'items', cursor: page.nextCursor, correlation: 'linked' });
+  assert.equal(next.items[0].requestId, 'observe-2'); assert.equal(next.hasMore, false);
+  assert.equal(next.items[0].content.text.length, 512); assert.equal(next.items[0].content.truncated, true);
+  const full = await f.read('message_observe', { view: 'detail', requestId: 'observe-2' });
+  assert.equal(full.item.content.text, 'x'.repeat(5000)); assert.equal(full.item.content.truncated, false);
+  const detail = mcp(f, 'read', 'message_observe', { view: 'detail', deliveryId: first.results[0].deliveryId }).value;
+  assert.equal(detail.item.content.text, malicious);
+  assert.equal(detail.item.consumers.find(reader => reader.consumerId === 'reader-a').confirmed, true);
+  assert.equal(detail.item.trace.events.filter(event => event.kind === 'consumer_confirmed').length, 1);
+  const stats = await f.read('message_observe', { view: 'stats', limit: 1, correlation: 'linked' });
+  assert.equal(stats.stats.total, 2); assert.deepEqual(stats.stats.byState, { accepted: 2 });
+  assert.equal(stats.stats.consumerConfirmed.pending, 2);
+  assert.equal((await f.read('message_observe', { view: 'detail', requestId: 'missing' })).item, null);
+  await assert.rejects(f.read('message_observe', { view: 'items', cursor: page.nextCursor, correlation: 'other' }), /cursor|filters/);
+  await assert.rejects(f.read('message_observe', { view: 'items', cursor: 'bad-cursor' }), /cursor/);
+  await assert.rejects(f.read('message_observe', { view: 'detail' }), /requires/);
+  await assert.rejects(f.read('message_observe', { view: 'items', limit: 101 }), /limit/);
+  await assert.rejects(f.read('message_observe', { view: 'stats', config: 'fake-secret' }), /Unknown/);
+  assert.ok(!JSON.stringify([page, next, detail, stats]).includes(f.dbPath));
+  assert.ok(!JSON.stringify([page, next, detail, stats]).includes('registrationKey'));
+  assert.deepEqual(snapshot(), before, 'observation leaves every owner file byte-for-byte unchanged');
+  const unseen = await f.read('inbox', { target: target('alpha'), consumerId: 'reader-b' });
+  assert.equal(unseen.messages.length, 2, 'observation did not confirm or consume mail');
+});
+
 test('Qoder and ZCode may choose mail addresses while their dedicated adapters are registered', async t => {
   const f = fixture(t);
   f.registry.install(join(moduleRoot, '..', 'agent-qoder'));

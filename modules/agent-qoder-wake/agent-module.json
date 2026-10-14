@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "id": "agent-qoder-wake",
+  "name": "QoderWake CN native control (experimental)",
+  "version": "0.1.0",
+  "entry": "./adapter.mjs",
+  "targets": [{ "id": "qoderwake-cn", "kind": "native-daemon", "label": "Operator-scoped QoderWake CN" }]
+}

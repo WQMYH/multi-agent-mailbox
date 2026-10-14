@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { createInterface } from "node:readline";
 import "./task-state.test.mjs";
 import "./remote.test.mjs";
@@ -12,8 +13,8 @@ const profile = JSON.parse(execFileSync(process.execPath, ["--input-type=module"
   import { ZCODE_CREDS_PATH } from './node_modules/zcode-acp-server/dist/utils.js';
   console.log(JSON.stringify({ credentials: ZCODE_CREDS_PATH, home: homedir(), base: process.env.ZCODE_DATA_BASE_DIR }));
 `], { env: { ...process.env, ...agentEnv }, encoding: "utf8" }));
-assert.equal(profile.credentials.replaceAll("\\", "/"), "E:/Programming/IDE/.zcode/v2/config.json");
-assert.equal(profile.base, agentEnv.HOME);
+assert.equal(profile.credentials.replaceAll("\\", "/"), join(process.env.HOME || process.env.USERPROFILE, ".zcode", "v2", "config.json").replaceAll("\\", "/"));
+assert.equal(profile.base, agentEnv.ZCODE_DATA_BASE_DIR ?? process.env.ZCODE_DATA_BASE_DIR);
 if (process.platform === "win32") assert.equal(profile.home, process.env.USERPROFILE, "Native CLI home must not move with ACP credentials");
 assert(readFileSync("scripts/legacy-gateway.mjs", "utf8").includes("env: { ...process.env, ...zcodeEnv }"), "Inventory must reuse the configured agent environment");
 console.log("zcode-ops desktop profile routing: OK");

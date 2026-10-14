@@ -14,10 +14,12 @@ export async function runProviderWorker(config, context, { wait = sleep, now = D
   const activeContext = { ...context, assertLease: () => {
     if (!renewWorker(config, token, now(), context)) throw Object.assign(Error('Qoder provider worker lease lost'), { code: 'QODER_WORKER_SUPERSEDED' });
   } };
+  let firstCycle = true;
   try {
     while (true) {
       activeContext.assertCurrent?.(); activeContext.assertLease();
-      const cycle = await runQueueCycle(config, activeContext);
+      const cycle = await runQueueCycle(config, { ...activeContext, retryDesktopHistory: firstCycle });
+      firstCycle = false;
       if (cycle.activeSessions === 0) return { status: 'idle', progressed: cycle.progressed };
       await wait(1000);
     }

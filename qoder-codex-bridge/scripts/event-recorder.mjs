@@ -97,7 +97,7 @@ export function validateBindingRecord(binding) {
   if (typeof binding.cwd !== "string" || !binding.cwd) throw Object.assign(Error("Binding cwd missing"), { code: "host_binding_cwd" });
   if (typeof binding.targetTaskId !== "string" || !binding.targetTaskId) throw Object.assign(Error("Binding targetTaskId missing"), { code: "host_binding_target" });
   if (typeof binding.targetCwd !== "string" || !binding.targetCwd) throw Object.assign(Error("Binding targetCwd missing"), { code: "host_binding_target_cwd" });
-  if (!Number.isFinite(Date.parse(binding.expiresAt))) throw Object.assign(Error("Binding expiry invalid"), { code: "host_binding_expired" });
+  if (binding.expiresAt !== undefined && (typeof binding.expiresAt !== "string" || !Number.isFinite(Date.parse(binding.expiresAt)))) throw Object.assign(Error("Binding expiry invalid"), { code: "host_binding_expired" });
   const links = [binding.deliveryId, binding.ownerId, binding.correlation];
   if (links.some(value => value !== undefined) && !links.every(value => typeof value === "string" && CORE_ID_PATTERN.test(value)))
     throw Object.assign(Error("Binding message association invalid"), { code: "host_binding_association" });
@@ -132,7 +132,7 @@ export function loadBinding(dataDir, selector, now = Date.now()) {
     if (!document.legacy) throw Object.assign(Error("Binding selector required"), { code: "host_binding_selector_required" });
     const binding = document.bindings[0];
     if (binding.returnMode === "native_turn") throw Object.assign(Error("Native turn binding is not a Hook route"), { code: "host_binding_native_only" });
-    if (Date.parse(binding.expiresAt) <= now) throw Object.assign(Error("Binding expired"), { code: "host_binding_expired" });
+    if (binding.expiresAt !== undefined && Date.parse(binding.expiresAt) <= now) throw Object.assign(Error("Binding expired"), { code: "host_binding_expired" });
     return binding;
   }
   if (!selector || typeof selector !== "object" || typeof selector.requestId !== "string"
@@ -151,7 +151,7 @@ export function loadBinding(dataDir, selector, now = Date.now()) {
     throw Object.assign(Error("Binding route unmatched"), { code: "host_binding_unmatched" });
   const binding = route[0];
   if (binding.returnMode === "native_turn") throw Object.assign(Error("Native turn binding is not a Hook route"), { code: "host_binding_native_only" });
-  if (Date.parse(binding.expiresAt) <= now) throw Object.assign(Error("Binding expired"), { code: "host_binding_expired" });
+  if (binding.expiresAt !== undefined && Date.parse(binding.expiresAt) <= now) throw Object.assign(Error("Binding expired"), { code: "host_binding_expired" });
   return binding;
 }
 
@@ -166,7 +166,7 @@ export function loadNativeBinding(dataDir, requestId, now = Date.now()) {
   if (bindings.some(other => other !== binding && other.hookSessionId === binding.hookSessionId
       && canonical(other.cwd) === canonical(binding.cwd) && other.returnMode !== "native_turn"))
     throw Object.assign(Error("Native turn route mixes with Hook binding"), { code: "host_binding_ambiguous" });
-  if (Date.parse(binding.expiresAt) <= now) throw Object.assign(Error("Binding expired"), { code: "host_binding_expired" });
+  if (binding.expiresAt !== undefined && Date.parse(binding.expiresAt) <= now) throw Object.assign(Error("Binding expired"), { code: "host_binding_expired" });
   return binding;
 }
 
@@ -274,7 +274,7 @@ function identityMatches(a, b) {
 // A record is trustworthy only if its stored event agrees with its identity and its send
 // markers agree with its state. This stops a forged "accepted" (sent=false / no hostReceipt)
 // or an event pointing at a different request/signal from being read back as success.
-function validReceiptShape(record) {
+export function validReceiptShape(record) {
   if (!record || typeof record !== "object" || Array.isArray(record)) return false;
   if (record.schemaVersion !== 1 || !record.identity || !record.event) return false;
   if (!SEND_STATES.has(record.sendState)) return false;

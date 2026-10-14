@@ -103,7 +103,7 @@ envelopes 为版本 1：携带原始请求、来源声明、目标、team、创�
 
 ## 数据与资源
 
-- 本机 config.json 同目录下的 messages.sqlite 保存提示词、回复和事件，运行时可能有 -journal；默认 CODEX_HOME/zcode-ops/，本机为 E:/Programming/IDE/.codex/zcode-ops/。不进入 Git 或安装包，不开放端口，不搬迁目录。
+- 本机 config.json 同目录下的 messages.sqlite 保存提示词、回复和事件，运行时可能有 -journal；默认 CODEX_HOME/zcode-ops/。不进入 Git 或安装包，不开放端口，不搬迁目录。
 - schema 7 新增并校验稳定的 `queue_owner`；schema 8 在同一消息行增加 workspace 创建状态、真实任务绑定及首发 ID。旧库按既有迁移链保留消息、事件位置、暂停状态与 schema 6 分派声明。schema 3 没有按读取者记录的完整交付证明，因此未清理正文的旧确认会撤销，必须重新读完并确认；已经清理的正文不会伪造恢复。旧 worker 正在运行时拒绝迁移，先停止旧 worker。不必关闭 Codex 对话：可在当前任务内从已安装目录启动 `scripts/remote-call.mjs` 使用新版 MCP；但不能同时调用旧版远程锁和新版票据。安装清单与当前内置工具入口版本应分别核对。
 - 新公开游标是绑定视图和过滤器的不透明字符串；旧内部数字游标不可直接传入，升级后重新读取建立基线。
 - 待解决消息最多 100 条，单次最多 8 个任务，提示词最多 31,000 字符且提示词与 context 合计不超过 40,000 UTF-8 字节；context 不超过 8,000 字节，字段至多 2,048 字符，references 最多 10 项。超长请求明确拒绝，发送方应提供摘要及引用，不静默截断。

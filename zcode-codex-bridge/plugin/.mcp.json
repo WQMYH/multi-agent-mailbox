@@ -11,7 +11,6 @@
         "ZCC_CODEX_CWD": "${user_config.codex_cwd}",
         "ZCC_SOURCE_SESSION_ID": "${user_config.source_session_id}",
         "ZCC_TEAM_ID": "${user_config.team_id}",
-        "ZCC_BINDING_EXPIRES_AT": "${user_config.binding_expires_at}",
         "ZCC_EXPECTED_REPLY": "${user_config.expected_reply}"
       },
       "enabled": true,

@@ -1,6 +1,8 @@
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-# Multi-Agent Mailbox · 多智能体信箱
+# 文枢 · Post-Core
+
+The local multi-agent mailbox is named **文枢** (Post-Core). Its product adapters are **小洞** (Post-Qoder-Dong), **小折** (Post-Zcode-Zhe), and **小元** (Post-Chat-Yuan). Claude Code and Kimi Code connect directly through the same Core MCP implementation, without dedicated plugins. Existing package IDs, tool names, queue owners and data paths remain compatible.
 
 [![CI](https://github.com/WQMYH/multi-agent-mailbox/actions/workflows/ci.yml/badge.svg)](https://github.com/WQMYH/multi-agent-mailbox/actions/workflows/ci.yml)
 [![Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
@@ -22,11 +24,13 @@ This is not another agent client or global scheduler. An agent does **not** need
 
 ## Tested agents and compatibility
 
-Native evidence is current through **2026-10-01**, on Windows. Product versions describe observations, not a version allowlist: inspect capabilities and investigate version changes when a route fails.
+Native evidence includes scoped tests through **2026-10-12**, on Windows; see [per-case scope](docs/compatibility.md). Product versions describe observations, not a version allowlist: inspect capabilities and investigate version changes when a route fails.
 
 | Agent | Generic mailbox tested | Dedicated integration tested |
 | --- | --- | --- |
 | Codex | Send, receive, correlated reply and exact confirmation | Three-tool MCP and matching CLI |
+| Claude Code | Direct Core MCP receive, correlated reply and both confirmations; existing DeepSeek Flash route | No dedicated plugin required |
+| Kimi Code | Persistent native Core MCP receive, correlated reply and both confirmations; existing DeepSeek Flash route | No dedicated plugin required |
 | pi | Native mail tools; pi → Qoder → the same pi session | No dedicated plugin required |
 | Qoder CN standalone | Real receive/reply in the pi ↔ Qoder mail loop | Session creation/send, FIFO, multi-session/multi-turn returns and explicit crash recovery |
 | ZCode CLI | **Codex ↔ the same native ZCode CLI session**, receive/reply/confirmation, no Sharing Link | Uses its existing command tool; no mail-specific ZCode plugin |
@@ -35,7 +39,7 @@ Native evidence is current through **2026-10-01**, on Windows. Product versions 
 
 **Other agents are generally interface-compatible** if they can execute the Node CLI or use MCP. They are not individually certified by this table. A small specialized adapter can add native wakeup, session targeting or Hooks; reuse Core and the existing queue rather than another message state machine.
 
-Mail is **pull-based**, not automatic product wakeup. ZCode's no-link test covers a new native CLI session with explicit resume. Control of an **existing ZCode desktop conversation** through `agent-zcode` still uses its Sharing Link. These are separate channels.
+Mail keeps durable pull routes. Explicit native receiver connections can also notify the selected existing session; Kimi ↔ Codex fresh notifications, actual fetches, correlated replies and exact confirmations were accepted in a scoped native test on 2026-10-11. Receiver support and native approval remain product-specific. ZCode's no-link test covers a new native CLI session with explicit resume. Control of an **existing ZCode desktop conversation** through `agent-zcode` still uses its Sharing Link. These are separate channels.
 
 ## Quick start: mailbox only
 
@@ -72,10 +76,13 @@ Keep the returned `ownerId`, `target`, `consumers` for that logical session. Use
 | `agent-core` | Shared CLI/MCP and module lifecycle | [Core](modules/agent-core/README.md) |
 | `agent-mail` | Generic pull mailboxes | [Mail](modules/agent-mail/README.md) |
 | `agent-qoder` | Standalone session control and its product queue | [Qoder](modules/agent-qoder/README.md) |
+| `agent-qoder-wake` | Native QoderWake CN CLI/daemon control (experimental; distinct from standalone and IDE) | [Wake](modules/agent-qoder-wake/README.md) |
 | `qoder-codex-bridge` | Optional Qoder Hooks, result attribution and Codex return | [Return plugin](qoder-codex-bridge/README.md) |
 | `agent-qoder-ide` + `qoder-ide-bridge` | Authenticated IDE command/page bridge | [IDE](qoder-ide-bridge/README.md) |
 | `agent-zcode` | ZCode desktop control via native remote mechanism | [ZCode](modules/agent-zcode/README.md) |
 | `zcode-codex-bridge` | Fixed-target Codex status/notification from ZCode | [Companion](zcode-codex-bridge/README.md) |
+
+The shared [post-core-mail skill](modules/agent-core/skills/post-core-mail/SKILL.md) guides agents to keep one Core instance, fetch actual bodies, correlate replies, confirm exact batches and preserve unknown requests. Installation is separate from actual session adoption. Wake keeps its own native state rather than using the Qoder CN SDK/CDP; native Session events do not confirm Core Mail consumption.
 
 Codex's native plugin entry:
 

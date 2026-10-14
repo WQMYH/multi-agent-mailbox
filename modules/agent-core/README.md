@@ -1,6 +1,6 @@
-# Agent Core
+# 文枢 · Post-Core
 
-This is the small Codex plugin and local MCP server for independently registered agent modules. It owns registration, lifecycle, lazy loading, and the three base tools only:
+This is the small Codex plugin and local MCP server for independently registered agent modules. It owns registration, lifecycle, lazy loading, three model-facing tools, and an optional read-only mailbox view:
 
 - `agent_discover({moduleId?})` lists metadata without importing modules; passing one enabled module id returns that module's operation descriptions.
 - `agent_read({moduleId,operation,args})` accepts only operations declared with `annotations.readOnlyHint: true`.
@@ -29,6 +29,16 @@ The same registry operations exposed by MCP are available to shell-capable agent
 `discover`, `read`, and `act` call the same `ModuleRegistry.agentDiscover`, `agentRead`, and `agentAct` methods as MCP. The exported synchronous `execute()` function remains the management-command interface used by existing callers.
 The direct CLI is a one-shot invocation: after writing its JSON result or diagnostic it exits, even if an imported adapter left a timer or socket open. That exit proves only that this call returned. Durable queue recovery, observation, and provider completion remain the adapter's responsibility.
 
+Optional local `chat-tunnel.json` beside the registry enables on-demand Chat Tunnel startup
+on CLI discover/read/act and MCP initialization/tool calls. The supervisor runs independently
+of one-shot CLI exit, bounds native Tunnel restart attempts, and never replays messages or
+starts at login. `chat ensure/status/stop CONFIG` controls that exact usage interval.
+`chat grant CONFIG` reads explicit scope JSON from stdin and grants temporary read access;
+only explicit human consent permits `chat grant-persistent CONFIG`. `chat revoke CONFIG`
+ends read access. Temporary access survives a Tunnel child restart, not a supervisor restart.
+No remote grant or generic execution tool is added. See the repository's
+`docs/chat-tunnel-startup.md` for configuration, diagnostics and the all-local-channels-off limit.
+
 `uninstall` removes only the registration. It does not delete the module source or provider data. Every call re-reads the registry, so a disabled or uninstalled module cannot be reached through an already-loaded cache.
 
 Set the same absolute `AGENT_CORE_REGISTRY` path in the MCP process environment as the CLI's `--registry` path. Relative example commands above run from the Multi-Agent Mailbox repository root. No registration is created at server startup. Use `install` again after an intentional module replacement; registration snapshots the metadata, canonical root and entry path. In-place source edits require an MCP process restart to refresh imported dependency modules.
@@ -38,6 +48,26 @@ Registry updates take a fail-fast exclusive `.lock` file before reading and atom
 Disable/uninstall prevents subsequent dispatch, including loads/descriptions that were still pending when registration changed. It does not cancel provider work already dispatched or terminate provider workers. Provider-specific cancellation remains in its adapter. Node's imported code remains in memory until the MCP process exits, but that cache grants no access to disabled or removed registrations.
 
 The native Codex plugin lifecycle is separate: enabling, disabling, or uninstalling `agent-core` is performed by Codex's plugin management. It is not automatically linked to the internal module registry. Verify both sides independently: Codex should advertise the three base tools; the CLI `list` should show the module state; selected `agent_discover` should return operation descriptions; after `disable` or `uninstall`, calls should fail while the source directory remains.
+
+## Mailbox records, trace and statistics
+
+The dashboard projects each adapter's existing persistent owner records. It creates no additional message database, sends nothing, confirms no consumption, recovers no queue, and starts no provider worker. Local admission, provider acceptance, consumer confirmation, terminal result and business acceptance are displayed separately; missing evidence remains unknown. Retained counts are not lifetime totals. Pruned or unrecorded history cannot be reconstructed.
+
+```powershell
+node modules/agent-core/src/cli.mjs dashboard
+'{"moduleId":"agent-mail","operation":"message_observe","args":{"view":"items","limit":32}}' | node modules/agent-core/src/cli.mjs read
+'{"moduleId":"agent-mail","operation":"message_observe","args":{"view":"detail","deliveryId":"..."}}' | node modules/agent-core/src/cli.mjs read
+```
+
+The explicit `dashboard` command runs on a random `127.0.0.1` port and writes its URL as one JSON object to stdout. Open it locally; stopping the process closes the site. It uses a session cookie and same-origin checks, no remote assets, and no write routes. Secrets never enter the URL. Do not publicly expose or reverse-proxy this private message view.
+
+The packaged `.mcp.json` enables `AGENT_CORE_UI=1`: one MCP App HTML resource and `agent_mailboard`, an **app-only** read tool with global/sidebar and thread entrypoint metadata. The three model-facing tools stay unchanged. Host support and actual loading are required for native rendering; metadata/installation alone do not prove the view is visible. Direct MCP launches without that variable retain the original three tools. The loopback website needs no UI-capable host.
+
+Observers provide `items/detail/stats`, exact correlation/request/delivery filters, and owner-bound pagination. List previews are bounded; detail marks truncation. Statistics cover the full matching retained scope, not only the current page, and deduplicate owner IDs. Unsupported, disabled or unreadable channels stay unknown rather than counting as zero. Bodies render as text, not HTML or instructions. Refresh clears stale details.
+
+One adapter may project several existing owners: the default `message_observe` remains compatible, and additional read-only operations opt in with `annotations.messageObservationHint: true`. The view selects the exact `{moduleId, operation}` pair for detail and pagination; a non-observer operation is rejected before calling it. Multiple channels do not add model-facing tools or allocations and never combine distinct owners' storage. Selecting only a module retains its default observer behavior.
+
+Mail and Qoder expose retained owner records. IDE reads committed records without acquiring a write/recovery lock; legacy body/history can be unavailable. New IDE body-bearing records require the paired bridge upgrade and consume the same owner budget. Before copying an independent IDE module, run `node modules/agent-qoder-ide/build.mjs` to generate its local dependencies. ZCode observation is separately coordinated; until its delta is present the view reports it as unsupported.
 
 ## Module manifest
 
@@ -104,13 +134,15 @@ node modules/agent-core/src/cli.mjs budget-status --registry E:\path\to\registry
 
 Existing fixed 20,000,000-byte and 200,000,000-byte records remain readable and unchanged. To convert one, explicitly run `budget sync` with `{"migrateLegacy":true,"ownerIds":[...]}`. Conversion preserves every existing owner quota and adds new owners at the configured default. Reducing an existing quota returns `owner_quota_reduction_requires_usage` with the requested byte difference because Core has no trustworthy shared usage snapshot. A managed provider deployment must update Core, the copied Qoder worker, and the Qoder return-store budget reader together before syncing beyond 200,000,000 bytes; their previous readers reject the new total.
 
-Modules and the registry are trusted local code/configuration, writable only by their owner. Canonical entry/manifest containment protects registration paths and detects retargeted links; it is not a sandbox for a module's transitive imports, filesystem access, or malicious source replacement. Review a module before installing it. Module import and `describe()` must be side-effect-free with respect to provider actions and workers. The core relies on the trusted adapter's `readOnlyHint`, and the adapter owns domain-argument validation. The core validates the three public envelopes and routes only advertised operation names. Discovery returns copies so callers cannot change cached read/write classification.
+Modules and the registry are trusted local code/configuration, writable only by their owner. Canonical entry/manifest containment protects registration paths and detects retargeted links; it is not a sandbox for a module's transitive imports, filesystem access, or malicious source replacement. Review a module before installing it. Module import and `describe()` must be side-effect-free with respect to provider actions and workers. The core relies on the trusted adapter's `readOnlyHint`, and the adapter owns domain-argument validation. The core validates the three public envelopes and routes only advertised operation names. Module imports are cached per registration; each selected discovery or read/action refreshes and validates `describe()` before routing. Discovery returns copies so callers cannot change another invocation's read/write classification. Adapters must still recheck volatile native availability before dispatch.
 
 ## Packaging and stdio
 
+Copy the Core `ui/` directory together with `src/`; it contains the standalone dashboard and MCP App HTML resource.
+
 `modules/agent-core/` is the complete standalone plugin source: `.codex-plugin/plugin.json`, `.mcp.json`, `package.json`, `src/`, README and the manifest example. It requires Node 24 or newer and no npm dependencies; copying this directory preserves its relative entry paths. Provider modules are separately copied/packaged and explicitly registered at their destination paths. Do not include a registry or provider data in a portable package. The repository marketplace exposes `agent-core`; CLI/MCP clients can use the same source without a Codex plugin installation. See the [root quick start](../../README.md).
 
-For a direct transport check, set `AGENT_CORE_REGISTRY` and launch `node modules/agent-core/src/mcp-server.mjs`. The stream is newline-delimited JSON-RPC on stdin/stdout; only the three public tool names are advertised. It negotiates MCP `2025-06-18`, ignores notifications without dispatching actions, reports tool failures as `result.isError`, and drains accepted requests on stdin EOF before flushing stdout and exiting. An already-dispatched provider call that never settles can delay EOF exit; the core does not replay or automatically cancel it. Adapters must reserve stdout for this protocol and send diagnostics to stderr.
+For a direct transport check, set `AGENT_CORE_REGISTRY` and launch `node modules/agent-core/src/mcp-server.mjs`. The stream is newline-delimited JSON-RPC on stdin/stdout; the three public tools remain model-facing. The extra app-only read tool is advertised only when `AGENT_CORE_UI=1` and the client advertises MCP Apps support. It negotiates MCP `2025-06-18`, ignores notifications without dispatching actions, reports tool failures as `result.isError`, and drains accepted requests on stdin EOF before flushing stdout and exiting. An already-dispatched provider call that never settles can delay EOF exit; the core does not replay or automatically cancel it. Adapters must reserve stdout for this protocol and send diagnostics to stderr.
 
 ## Local checks
 

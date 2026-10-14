@@ -1,6 +1,6 @@
 [EN](README.md) | [中文](README.zh-CN.md)
 
-# ZCode Codex Bridge
+# 小折 · Post-Zcode-Zhe
 
 <code>zcode-codex-bridge</code> is the ZCode-side companion plugin in this repository. It sends bounded status/result notifications to one configured Codex Desktop task through the official local adapter.
 
@@ -20,7 +20,7 @@ The plugin exposes four MCP tools:
 
 | Tool | Behavior |
 | --- | --- |
-| <code>codex_binding_status</code> | Checks the local binding and reports expiry, setup guidance, bounded report counts, and metadata-only Hook state. It does not contact Codex. |
+| <code>codex_binding_status</code> | Checks the local binding and reports configuration errors, setup guidance, bounded report counts, and metadata-only Hook state. It does not contact Codex. |
 | <code>codex_thread_read</code> | By default, reads only the bound task summary. Optional <code>view: "active_count"</code> returns an observed count and coverage, never other task details. |
 | <code>codex_host_report</code> | Sends one bounded structured status/result notification through the already-running Codex desktop adapter. <code>requestId</code> and <code>report</code> are required. |
 | <code>codex_fixed_reply_test</code> | Retired independent-process candidate; remains blocked in production. |
@@ -41,7 +41,7 @@ Every request ID gets an exclusive local receipt before dispatch. Its normalized
 ## Safety boundary
 
 - One configured Codex task ID and exact working directory.
-- Expiring ZCode binding and expiring desktop-host binding.
+- Fixed target/cwd/source checks and the current native host connection and permissions; no plugin-imposed expiry.
 - Structured bounded report fields only; no raw prompt, task selector, model selector, command, or operation parameter.
 - Only the official host adapter's <code>read_thread</code> and <code>send_message_to_thread</code> tools are reachable.
 - No task history is exposed to ZCode.
@@ -62,13 +62,12 @@ Every request ID gets an exclusive local receipt before dispatch. Its normalized
    - <code>codex_cwd</code>: exact destination task directory
    - <code>source_session_id</code>: ZCode provenance label
    - <code>team_id</code>: bounded team label
-   - <code>binding_expires_at</code>: ISO-8601 expiry
    - <code>expected_reply</code>: uppercase fixed reply token
 
-4. From the authorized Codex task environment, save a short-lived desktop-host binding:
+4. From the authorized Codex task environment, save the fixed desktop-host connection:
 
    ~~~text
-   node "<installed-plugin-directory>/scripts/host-client.mjs" --configure-host <plugin-data-directory> <official-app-tools-server.mjs> <ISO-expiry>
+   node "<installed-plugin-directory>/scripts/host-client.mjs" --configure-host <plugin-data-directory> <official-app-tools-server.mjs>
    ~~~
 
    The command requires the current Codex desktop environment and writes only <code>host-config.json</code> under the plugin data directory. It does not print the pipe address.
@@ -79,7 +78,9 @@ The host binding is coupled to the current Codex desktop process. Recreate it af
 
 ## Use
 
-Start with <code>codex_binding_status</code>. Confirm the destination, directory, expiry, <code>hostReportConfigured: true</code>, and the returned <code>setupHint</code>/<code>hostReports</code> state. Use <code>codex_thread_read</code> when a fresh target status is needed.
+Start with <code>codex_binding_status</code>. Confirm the destination, directory, <code>hostReportConfigured: true</code>, and the returned <code>setupHint</code>/<code>hostReports</code> state. Use <code>codex_thread_read</code> when a fresh target status is needed.
+
+No date is required or renewed. Omitted, malformed or legacy expired dates do not gate reads or notifications. Valid legacy binding dates retain their old fingerprint representation for historical receipt compatibility, not authorization; host notification identities are unchanged. The old third setup argument is ignored. Current host connection and native permissions still apply; reconfigure the connection when its desktop pipe changes.
 
 For an explicitly authorized notification, call <code>codex_host_report</code> once with a new stable request ID and a report shaped like this:
 
@@ -121,7 +122,7 @@ node --check scripts/self-test.mjs
 node --check hooks/probe.mjs
 ~~~
 
-The dependency-free test covers structured argument bounds, target and directory checks, active/busy/idle/<code>notLoaded</code> paths, same/different-payload concurrency, uncertain delivery without replay, receipt capacity, expiry, history stripping, MCP lifecycle, Hook retention, and manifest parsing.
+The dependency-free tests cover structured argument bounds, target and directory checks, active/busy/idle/<code>notLoaded</code> paths, same/different-payload concurrency, uncertain delivery without replay, receipt capacity, omitted/legacy expired date compatibility, history stripping, MCP lifecycle, Hook retention, and manifest parsing. Expiry regressions use private fixtures and fake host streams with explicit send counts; no live host is contacted.
 
 Historical 0.2.4 live acceptance completed on 2026-09-09; it does not validate this 0.3.1 source candidate:
 

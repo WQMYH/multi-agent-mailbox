@@ -42,12 +42,14 @@ function moduleRoot(id, marker) {
     targets: [{ id: `${id}-target`, kind: "test", label: id }]
   }));
   writeFileSync(join(moduleDir, "adapter.mjs"), `
-    import { appendFileSync } from "node:fs";
+    import { appendFileSync, existsSync, readFileSync } from "node:fs";
     appendFileSync(${JSON.stringify(marker)}, "loaded;");
     if (process.env.CORE_TEST_KEEP_ALIVE === "1") setInterval(() => {}, 1000);
     export async function describe() {
       appendFileSync(${JSON.stringify(marker)}, "described;");
       await globalThis.agentCoreTestHook?.(${JSON.stringify(id)});
+      if (existsSync(${JSON.stringify(join(moduleDir, "capabilities.json"))}))
+        return JSON.parse(readFileSync(${JSON.stringify(join(moduleDir, "capabilities.json"))}, "utf8"));
       return [
       { name: "inspect", description: "Read test state", inputSchema: { type: "object" }, annotations: { readOnlyHint: true } },
       { name: "change", description: "Change test state", inputSchema: { type: "object" }, annotations: { readOnlyHint: false } }
@@ -138,6 +140,29 @@ async function run() {
   await assert.rejects(() => registry.agentRead({ moduleId: "agent-alpha", operation: "inspect", args: null }), /JSON object/);
   await assert.rejects(() => registry.agentRead({ moduleId: "agent-alpha", operation: "inspect", args: { invalid: true } }), /Domain/);
   await assert.rejects(() => registry.agentRead({ moduleId: "agent-missing", operation: "inspect" }), /Unknown module/);
+
+  const capabilitiesPath = join(alpha, "capabilities.json");
+  const alphaOperations = (await registry.agentDiscover({ moduleId: "agent-alpha" })).operations;
+  const actionsBeforeCapabilityChange = readFileSync(alphaMarker + ".actions", "utf8");
+  writeFileSync(capabilitiesPath, JSON.stringify(alphaOperations.filter(operation => operation.name === "inspect")));
+  await assert.rejects(() => registry.agentAct({ moduleId: "agent-alpha", operation: "change" }), /Unknown operation/,
+    "a removed capability is rejected before dispatch even after the module was loaded");
+  assert.deepEqual((await registry.agentDiscover({ moduleId: "agent-alpha" })).operations.map(operation => operation.name), ["inspect"],
+    "selected discovery reflects current capabilities without reinstalling the module");
+  writeFileSync(capabilitiesPath, JSON.stringify(alphaOperations.map(operation => ({
+    ...operation, annotations: { readOnlyHint: operation.name === "change" }
+  }))));
+  await assert.rejects(() => registry.agentRead({ moduleId: "agent-alpha", operation: "inspect" }), /mutating/);
+  await assert.rejects(() => registry.agentAct({ moduleId: "agent-alpha", operation: "change" }), /read-only/);
+  writeFileSync(capabilitiesPath, JSON.stringify([alphaOperations[0], alphaOperations[0]]));
+  await assert.rejects(() => registry.agentAct({ moduleId: "agent-alpha", operation: "change" }), /Duplicate operation/,
+    "invalid refreshed descriptions cannot reuse an older capability snapshot");
+  assert.equal(readFileSync(alphaMarker + ".actions", "utf8"), actionsBeforeCapabilityChange,
+    "all refreshed capability rejections happen before any adapter action");
+  unlinkSync(capabilitiesPath);
+  assert.equal((await registry.agentRead({ moduleId: "agent-alpha", operation: "inspect" })).id, "agent-alpha");
+  assert.equal(readFileSync(alphaMarker, "utf8").split("loaded;").length - 1, 1,
+    "refreshing capabilities still imports the registration once");
 
   const receipt = validateMessageReceipt({
     schemaVersion: 1,
@@ -282,8 +307,11 @@ async function run() {
   }
   const describeCount = () => readFileSync(betaMarker, "utf8").split("described;").length - 1;
   const descriptionsBefore = describeCount();
+  const importsBefore = readFileSync(betaMarker, "utf8").split("loaded;").length - 1;
   await Promise.all([registry.agentDiscover({ moduleId: "agent-beta" }), registry.agentDiscover({ moduleId: "agent-beta" })]);
-  assert.equal(describeCount(), descriptionsBefore + 1, "concurrent selected calls share one pending load/describe");
+  assert.equal(describeCount(), descriptionsBefore + 2, "each concurrent selected call refreshes its own capability snapshot");
+  assert.equal(readFileSync(betaMarker, "utf8").split("loaded;").length - 1, importsBefore + 1,
+    "concurrent selected calls still share one pending module import");
 
   const outside = join(root, "outside.mjs");
   const escaped = join(root, "escaped");

@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Mailbox · 收发观测</title>
+<style>
+:root{color-scheme:light dark;--bg:#f6f7fa;--panel:#fff;--ink:#172437;--dim:#5b6878;--line:#dde3eb;--accent:#265fc9;--ok:#16714c;--warn:#985910;--bad:#a93842;--tint:#eef3ff;font:14px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink)}main{max-width:1480px;margin:auto;padding:24px}header{display:flex;gap:20px;align-items:center;justify-content:space-between;margin-bottom:20px}h1{font-size:26px;letter-spacing:-.5px;margin:0}h2{font-size:16px;margin:0 0 8px}h3{font-size:13px;margin:18px 0 6px;color:var(--dim)}p{margin:6px 0}.muted,small{color:var(--dim)}.label{font-size:11px;letter-spacing:1.6px;text-transform:uppercase;color:var(--accent);font-weight:700}.toolbar,.cards,.chips{display:flex;gap:10px;flex-wrap:wrap}.toolbar{align-items:end;margin:20px 0}.toolbar label{display:grid;gap:4px;font-size:12px;color:var(--dim)}input,select,button{font:inherit;border:1px solid var(--line);border-radius:8px;padding:8px 11px;background:var(--panel);color:var(--ink)}input{width:230px}button{cursor:pointer}button:hover{border-color:var(--accent)}button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--accent);outline-offset:2px}button:disabled{opacity:.5;cursor:default}.primary{background:var(--accent);color:white;border-color:var(--accent)}.cards{margin:16px 0}.card{flex:1;min-width:140px;border:1px solid var(--line);background:var(--panel);border-radius:12px;padding:14px}.number{font-size:25px;font-weight:650}.layout{display:grid;grid-template-columns:minmax(0,1.6fr) minmax(310px,1fr);gap:16px}.panel{border:1px solid var(--line);border-radius:12px;background:var(--panel);overflow:hidden}.heading{padding:16px;border-bottom:1px solid var(--line)}.content{padding:16px}.list{padding:0 8px 8px;max-height:650px;overflow:auto}.record{width:100%;display:block;text-align:left;margin-top:8px;padding:12px;border-color:transparent;background:transparent}.record.selected{border-color:var(--accent);background:var(--tint)}.record .top{display:flex;justify-content:space-between;gap:8px}.record .route{margin:5px 0;font-weight:500;overflow-wrap:anywhere}.record .preview{color:var(--dim);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.chip{font-size:11px;border:1px solid var(--line);padding:2px 7px;border-radius:20px;color:var(--dim);max-width:100%;overflow-wrap:anywhere}.ok{color:var(--ok)}.warning{color:var(--warn)}.error{color:var(--bad)}dl{display:grid;grid-template-columns:76px minmax(0,1fr);gap:7px 10px;margin:10px 0}dt{color:var(--dim)}dd{margin:0;overflow-wrap:anywhere}pre{font:12px/1.65 ui-monospace,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere;background:var(--bg);border-radius:8px;padding:12px;max-height:380px;overflow:auto}.trace{border-left:2px solid var(--line);margin:10px 5px;padding-left:17px}.event{position:relative;margin:0 0 16px}.event:before{content:"";position:absolute;left:-23px;top:5px;width:8px;height:8px;border-radius:50%;background:var(--accent)}.module-note{border-top:1px solid var(--line);padding:12px 16px;font-size:12px;overflow-wrap:anywhere}.footer{margin-top:14px;color:var(--dim);font-size:12px}.empty{padding:34px 16px;color:var(--dim);text-align:center}.stats-lines{margin-top:8px;font-size:12px;color:var(--dim)}.stats-lines div{display:flex;justify-content:space-between;gap:12px}.mobile-back{display:none}@media(prefers-color-scheme:dark){:root{--bg:#121820;--panel:#1b2430;--ink:#e5edf5;--dim:#a2afc1;--line:#344255;--accent:#75a5ff;--ok:#80d6ac;--warn:#edbe77;--bad:#f491a2;--tint:#253751}.primary{color:#10203b}}@media(max-width:820px){main{padding:16px}.layout{grid-template-columns:1fr}.list{max-height:420px}header{align-items:start}h1{font-size:23px}input{width:100%}.toolbar label{flex:1;min-width:180px}.card{min-width:120px}}
+</style>
+<main>
+  <header><div><div class="label">Multi-Agent Mailbox</div><h1>收发观测</h1><p class="muted">信件、投递事实与关联 trace · 只读</p></div><button id="refresh" class="primary">刷新</button></header>
+  <form id="filters" class="toolbar">
+    <label>通道<select id="module"><option value="">全部已登记通道</option></select></label>
+    <label>关联 / request / delivery ID<input id="query" placeholder="精确 ID，可留空" maxlength="128"></label>
+    <label>匹配字段<select id="field"><option value="correlation">correlation</option><option value="requestId">requestId</option><option value="deliveryId">deliveryId</option></select></label>
+    <label>本页状态<select id="state"><option value="">所有状态</option></select></label>
+    <button type="submit">筛选</button>
+  </form>
+  <p id="status" role="status" aria-live="polite" class="muted">正在连接只读观测入口…</p>
+  <section id="cards" class="cards" aria-label="保留记录统计"></section>
+  <div class="layout">
+    <section class="panel" aria-label="信件列表"><div class="heading"><h2>保留的收发记录</h2><small id="listScope">每个通道最多 32 条；统计覆盖范围单独标明</small></div><div id="records" class="list"></div><div class="content"><button id="more" hidden>下一页</button></div><div id="modules"></div></section>
+    <section class="panel" aria-label="信件详情"><div class="heading"><h2>内容与 trace</h2><small>本地接纳 ≠ 原生接受 ≠ 消费确认 ≠ 业务完成</small></div><div id="detail" class="content"><p class="muted">选择一条记录查看正文、来源与投递证据。</p></div></section>
+  </div>
+  <p class="footer">只观察现有 owner 记录，不发送、不确认消费、不恢复队列。历史已清理或未记录的内容不可还原；未知不会计作成功。页面不会加载远端资源。</p>
+</main>
+<script>
+(() => {
+  'use strict';
+  const $ = id => document.getElementById(id);
+  const local = location.protocol === 'http:' && location.hostname === '127.0.0.1';
+  let snapshot, selection, cursor, busy = false, requestId = 0;
+  const pending = new Map();
+  const el = (tag, text, cls) => { const node = document.createElement(tag); if (text !== undefined) node.textContent = String(text); if (cls) node.className = cls; return node; };
+  const show = value => value === null || value === undefined ? '未知' : typeof value === 'object' ? JSON.stringify(value) : String(value);
+  const fact = value => value === true ? '已证实' : value === false ? '未达到' : '未知';
+  const when = value => value && value !== 'unknown' ? new Date(value).toLocaleString() : '时间未记录';
+  function rpc(method, params) {
+    const id = ++requestId;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => { pending.delete(id); reject(Error('侧栏宿主未响应；可使用本机 dashboard 入口')); }, 15000);
+      pending.set(id, { resolve, reject, timer });
+      window.parent.postMessage({ jsonrpc: '2.0', id, method, params }, '*');
+    });
+  }
+  window.addEventListener('message', event => {
+    if (event.source !== window.parent || local) return;
+    const msg = event.data;
+    if (!msg || msg.jsonrpc !== '2.0') return;
+    if (pending.has(msg.id)) { const p = pending.get(msg.id); pending.delete(msg.id); clearTimeout(p.timer); msg.error ? p.reject(Error('宿主读取失败')) : p.resolve(msg.result); }
+    if (msg.method === 'ui/notifications/tool-result' && msg.params?.structuredContent?.modules) render(msg.params.structuredContent);
+    if (msg.method === 'ui/resource-teardown') { for (const p of pending.values()) { clearTimeout(p.timer); p.reject(Error('页面已关闭')); } pending.clear(); }
+  });
+  async function read(args) {
+    if (local) { const r = await fetch('/api/observe?q=' + encodeURIComponent(JSON.stringify(args)), { cache: 'no-store', credentials: 'same-origin' }); if (!r.ok) throw Error('本机观测读取失败（' + r.status + '）'); return r.json(); }
+    const result = await rpc('tools/call', { name: 'agent_mailboard', arguments: args });
+    if (result?.isError) throw Error('观测查询未通过；请核对筛选或 owner 可用性');
+    if (!result?.structuredContent?.modules) throw Error('宿主未返回观测数据');
+    return result.structuredContent;
+  }
+  function filters() { const args = { view: 'items', limit: 32 }; if ($('module').value) [args.moduleId, args.operation] = $('module').value.split('/'); if ($('query').value.trim()) args[$('field').value] = $('query').value.trim(); return args; }
+  function drawList() {
+    $('records').replaceChildren();
+    let count = 0;
+    for (const row of snapshot?.modules || []) for (const item of row.observation?.items || []) {
+      if ($('state').value && item.state !== $('state').value) continue;
+      count++;
+      const button = el('button', undefined, 'record' + (selection === row.moduleId + ':' + row.operation + ':' + item.deliveryId ? ' selected' : ''));
+      const top = el('div', undefined, 'top'); top.append(el('span', row.name, 'label'), el('small', when(item.createdAt))); button.append(top);
+      button.append(el('div', show(item.source) + ' → ' + show(item.target), 'route'));
+      const chips = el('div', undefined, 'chips'); chips.append(el('span', item.state, 'chip'), el('span', '原生 ' + fact(item.evidence.providerAccepted), 'chip'), el('span', item.deliveryId, 'chip')); button.append(chips);
+      button.append(el('div', item.content.status === 'available' ? item.content.text : '正文不可用 · ' + (item.content.reason || '未记录'), 'preview'));
+      button.onclick = () => detail(row.moduleId, row.operation, item.deliveryId); $('records').append(button);
+    }
+    if (!count) $('records').append(el('p', '本页没有匹配记录。不可用通道不代表没有消息。', 'empty'));
+  }
+  function render(data) {
+    snapshot = data;
+    selection = null;
+    $('detail').replaceChildren(el('p', '选择一条记录查看当前正文、来源与投递证据。', 'muted'));
+    $('cards').replaceChildren();
+    const card = (title, value, note) => { const node = el('div', undefined, 'card'); node.append(el('div', title, 'muted'), el('div', value, 'number'), el('small', note)); $('cards').append(node); return node; };
+    card('当前保留记录', data.totals.retained, data.totals.complete ? '可读范围完整；非无限历史' : '部分覆盖，不可当全局总数');
+    card('可读持久 owner', data.totals.readableOwners, '同一 owner 不重复计量');
+    const seen = new Set();
+    for (const row of data.modules) if (row.status === 'ready' && !seen.has(row.statistics.ownerId)) {
+      seen.add(row.statistics.ownerId);
+      const node = card(row.name, row.statistics.stats.total, '该 owner 全匹配保留窗口');
+      const lines = el('div', undefined, 'stats-lines');
+      for (const [state, total] of Object.entries(row.statistics.stats.byState)) { const line = el('div'); line.append(el('span', state), el('strong', total)); lines.append(line); }
+      node.append(lines);
+    }
+    $('modules').replaceChildren();
+    const states = new Set();
+    for (const row of data.modules) {
+      const note = el('div', undefined, 'module-note'); note.append(el('strong', row.name + ' · ' + row.status));
+      if (row.status === 'ready') {
+        note.append(el('div', 'owner ' + row.observation.ownerId));
+        for (const text of row.observation.coverage.limitations) note.append(el('div', text, 'warning'));
+        note.append(el('div', '保留边界 ' + show(row.observation.retention), 'muted'));
+        for (const state of Object.keys(row.statistics.stats.byState)) states.add(state);
+      } else note.append(el('div', '此通道不可读或未接观测能力；消息数未知。', 'warning'));
+      $('modules').append(note);
+    }
+    const priorState = $('state').value; $('state').replaceChildren(el('option', '所有状态')); $('state').firstChild.value = '';
+    for (const value of states) { const option = el('option', value); option.value = value; $('state').append(option); } $('state').value = states.has(priorState) ? priorState : '';
+    if (!$('module').value) {
+      const options = [...$('module').options].map(o => o.value);
+      for (const row of data.modules) { const value = row.moduleId + '/' + row.operation; if (!options.includes(value)) { const option = el('option', row.name); option.value = value; $('module').append(option); } }
+    }
+    const page = data.modules.length === 1 ? data.modules[0].observation : null;
+    cursor = page?.nextCursor; $('more').hidden = !cursor; $('listScope').textContent = page ? '单 owner 分页；统计不随页码截断' : '每个通道首 32 条；选择通道后可翻页';
+    $('status').className = 'muted';
+    $('status').textContent = '更新于 ' + when(data.observedAt) + ' · 只读快照' + (data.totals.complete ? '' : ' · 存在未覆盖通道');
+    drawList();
+  }
+  async function detail(moduleId, operation, deliveryId) {
+    if (busy) return;
+    busy = true; selection = moduleId + ':' + operation + ':' + deliveryId; drawList(); $('detail').replaceChildren(el('p', '正在读取详情…', 'muted'));
+    try {
+      const data = await read({ moduleId, operation, view: 'detail', deliveryId }); const row = data.modules.find(r => r.moduleId === moduleId && r.operation === operation); const item = row?.observation?.item;
+      if (!item) throw Error('该记录不可读、已清理或需要恢复；未触发恢复');
+      $('detail').replaceChildren();
+      const dl = el('dl');
+      for (const [key, value] of [['request', item.requestId], ['delivery', item.deliveryId], ['owner', item.ownerId], ['来源', item.source], ['目标', item.target], ['关联', item.correlation], ['回复关系', item.replyTo], ['状态', item.state], ['创建', when(item.createdAt)], ['更新', when(item.updatedAt)]]) { dl.append(el('dt', key), el('dd', show(value))); } $('detail').append(dl);
+      $('detail').append(el('h3', '投递证据（分别判断）'));
+      const facts = el('div', undefined, 'chips');
+      for (const [label, value] of [['本地接纳',item.evidence.ownerAccepted], ['原生接受',item.evidence.providerAccepted], ['消费者确认',item.evidence.consumerConfirmed]]) facts.append(el('span', label + ' · ' + fact(value), 'chip' + (value === true ? ' ok' : '')));
+      facts.append(el('span', '回合结果 · ' + show(item.evidence.terminalOutcome || 'unknown'), 'chip'), el('span', '业务验收 · 未知', 'chip')); $('detail').append(facts);
+      $('detail').append(el('h3', '发送内容'), el('pre', item.content.status === 'available' ? item.content.text : '不可还原 · ' + (item.content.reason || '未记录')));
+      if (item.content.truncated) $('detail').append(el('small', '正文达到观测读取上限，已截断；不是完整信件。', 'warning'));
+      if (item.reply) { $('detail').append(el('h3', '对应回复'), el('pre', show(item.reply))); }
+      $('detail').append(el('h3', '实际记录的 trace'));
+      const trace = el('div', undefined, 'trace');
+      for (const event of item.trace.events) { const node = el('div', undefined, 'event'); node.append(el('strong', event.kind), el('div', when(event.at), 'muted')); if (event.detail !== undefined) node.append(el('pre', show(event.detail))); trace.append(node); }
+      if (item.trace.status === 'unavailable' || !item.trace.events.length) trace.append(el('p', item.trace.reason || '未持久记录状态转换，不反造历史。', 'muted'));
+      $('detail').append(trace);
+      for (const text of row.observation.coverage.limitations) $('detail').append(el('p', text, 'warning'));
+    } catch (error) { $('detail').replaceChildren(el('p', error.message, 'error')); }
+    finally { busy = false; }
+  }
+  async function refresh(next = false) {
+    if (busy) return; busy = true; $('refresh').disabled = true; $('more').disabled = true;
+    try { const args = filters(); if (next && cursor) args.cursor = cursor; render(await read(args)); }
+    catch (error) { $('status').textContent = error.message; $('status').className = 'error'; }
+    finally { busy = false; $('refresh').disabled = false; $('more').disabled = false; }
+  }
+  $('filters').onsubmit = event => { event.preventDefault(); cursor = null; refresh(); };
+  $('refresh').onclick = () => refresh(); $('more').onclick = () => refresh(true); $('state').onchange = drawList;
+  (async () => { try { if (!local) { await rpc('ui/initialize', { protocolVersion: '2026-01-26', appInfo: { name: 'agent-core-mailboard', version: '1.0.0' }, appCapabilities: {} }); window.parent.postMessage({ jsonrpc: '2.0', method: 'ui/notifications/initialized' }, '*'); } await refresh(); } catch (error) { $('status').textContent = error.message; $('status').className = 'error'; } })();
+})();
+</script>
+</html>

@@ -5,7 +5,7 @@ const { randomUUID, timingSafeEqual } = require("node:crypto");
 const { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } = require("node:fs");
 const { homedir } = require("node:os");
 const { isAbsolute, join, relative, resolve, sep } = require("node:path");
-const { claimMutation, ownerIdForStateDir, readMessage, recordCommandOutcome, reserveMessage,
+const { claimMutation, observeMessages, ownerIdForStateDir, readMessage, recordCommandOutcome, reserveMessage,
   wireContent } = require("./message-store.cjs");
 
 const target = Object.freeze({ id: "qoder-cn-ide", kind: "desktop", label: "Qoder CN IDE" });
@@ -55,11 +55,11 @@ function authorized(header, token) {
   return received.length === expected.length && timingSafeEqual(received, expected);
 }
 
-function send(response, status, value) {
+function send(response, status, value, maxBytes = 65536) {
   let text = JSON.stringify(value);
-  if (Buffer.byteLength(text) > 65536) {
+  if (Buffer.byteLength(text) > maxBytes) {
     status = 500;
-    text = JSON.stringify({ error: "Bridge response exceeds 64 KiB" });
+    text = JSON.stringify({ error: `Bridge response exceeds ${maxBytes / 1024} KiB` });
   }
   response.writeHead(status, { "content-type": "application/json", "content-length": Buffer.byteLength(text),
     "cache-control": "no-store", connection: "close" });
@@ -259,6 +259,7 @@ async function startBridge(vscode, context, options = {}) {
       if (!authorized(request.headers.authorization, config.token)) throw error(401, "Unauthorized");
       if (request.method !== "POST") throw error(405, "POST required");
       const body = await readBody(request);
+      if (request.url === "/v1/message/observe") return send(response, 200, observeMessages(config.stateDir, body), 131072);
       if (request.url === "/v1/identity") {
         exact(body, ["instanceId", "workspace"]);
         if (body.instanceId !== instanceId) throw error(409, "IDE instance identity mismatch");

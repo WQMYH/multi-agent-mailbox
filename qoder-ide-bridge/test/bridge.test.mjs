@@ -169,7 +169,7 @@ require(${JSON.stringify(modulePath)}).readMessage(${JSON.stringify(store)}, ${J
 let bridge;
 try {
   bridge = await startBridge(fake, context, { env: {}, randomUUID: () => instanceId,
-    pid: 4242, executable: "D:\\Program Files\\Qoder CN IDE\\Qoder CN IDE.exe", now: () => 1700000000000 });
+    pid: 4242, executable: "C:\\Example\\Qoder CN IDE\\Qoder CN IDE.exe", now: () => 1700000000000 });
   const config = readConfig(configPath);
   const instances = listInstances(config);
   assert.equal(instances.length, 1);
@@ -241,7 +241,8 @@ try {
   assert.equal(tightRecord.reply.state, "observed");
   assert.equal(tightRecord.reply.truncated, true);
   assert.equal(statSync(tightPath).size + statSync(join(storeC, "message-reservations", `${acceptedC}.headroom`)).size,
-    2 * 64 * 1024, "record and retained headroom keep the full replacement commitment");
+    2 * (64 * 1024 + Buffer.byteLength(JSON.stringify(tightRecord.content))),
+    "record and retained headroom keep the full replacement commitment including body bytes");
   assert.ok(storeBytes(storeC) <= tightAllocation, "committed reservation and bounded updates remain inside allocation");
   assert.equal(readdirSync(join(storeC, "message-reservations")).some(name => name.endsWith(".tmp")), false);
 
@@ -293,14 +294,15 @@ try {
       "maintenance read repairs storage but does not consume the uncommitted provider update");
   }
   assert.equal(readFileSync(crashPath, "utf8"), beforeCrash);
-  assert.equal(statSync(crashPath).size + statSync(crashRoom).size, 2 * 64 * 1024);
+  const crashCapacity = 64 * 1024 + Buffer.byteLength(JSON.stringify(JSON.parse(beforeCrash).content));
+  assert.equal(statSync(crashPath).size + statSync(crashRoom).size, 2 * crashCapacity);
   assert.equal(readdirSync(join(crashStore, "message-reservations")).some(name => name.endsWith(".tmp")), false);
   assert.equal(existsSync(join(crashStore, "message-reservations", ".owner.lock")), false);
   assert.equal(collect(crashRaw, crashConfig), "recorded", "a later Hook persists after dead-lock recovery");
   assert.equal(collect(JSON.stringify({ hook_event_name: "Stop", session_id: "crash-session", cwd: workspace,
     transcript_path: join(root, "crash.jsonl"), request_set_id: "crash-set", stop_hook_active: false,
     last_assistant_message: "\u0000".repeat(8000) }), crashConfig), "recorded");
-  assert.equal(statSync(crashPath).size + statSync(crashRoom).size, 2 * 64 * 1024);
+  assert.equal(statSync(crashPath).size + statSync(crashRoom).size, 2 * crashCapacity);
   assert.ok(storeBytes(crashStore) <= crashAllocation);
 
   const tigerRequest = "22222222-2222-4222-8222-222222222222";
@@ -517,7 +519,7 @@ try {
   await bridge.dispose(); bridge = undefined;
   const restartedId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
   bridge = await startBridge(fake, context, { env: {}, randomUUID: () => restartedId,
-    pid: 4343, executable: "D:\\Program Files\\Qoder CN IDE\\Qoder CN IDE.exe", now: () => 1700000001000 });
+    pid: 4343, executable: "C:\\Example\\Qoder CN IDE\\Qoder CN IDE.exe", now: () => 1700000001000 });
   const callsBeforePersistentReplay = commandCalls.length;
   await assert.rejects(() => sendCurrentConversation({ instanceId: restartedId, workspace, requestId: sendRequest,
     content: "must remain reserved after restart", ...sendMeta(sendRequest) }, config), /persistently reserved/);

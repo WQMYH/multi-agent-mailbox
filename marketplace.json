@@ -5,7 +5,7 @@
     {
       "name": "zcode-codex-bridge",
       "source": "./zcode-codex-bridge/plugin",
-      "description": "Return a bounded report from ZCode to a bound Codex task.",
+      "description": "小折 · Post-Zcode-Zhe — return a bounded report from ZCode to a bound Codex task.",
       "version": "0.3.1",
       "category": "developer-tools",
       "strict": true

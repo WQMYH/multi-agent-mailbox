@@ -83,7 +83,8 @@ test('future-version permissions retain scoped reads, explicit missing-interface
 test('interaction reads are scoped and bounded; response arguments reject overrides and invalid decisions',()=>fixture(async({state,read,args,invoke})=>{
   const operations=await describe();assert.equal(operations.find(x=>x.name==='read_interactions').annotations.readOnlyHint,true);
   assert.equal(operations.find(x=>x.name==='respond_permission').annotations.readOnlyHint,false);
-  delete process.env.QODER_CONTROL_ROOT;await assert.rejects(read(),/Operator-owned/);assert.equal(state.fetches,0);
+  const discoveryFetches=state.fetches;
+  delete process.env.QODER_CONTROL_ROOT;await assert.rejects(read(),/Operator-owned/);assert.equal(state.fetches,discoveryFetches);
   process.env.QODER_CONTROL_ROOT=state.summary.cwd;
   state.summary.workspaceId='wrong';await assert.rejects(read(),/rejected/);assert.equal(state.reads,0);state.summary.workspaceId=workspaceId;
   state.detailSummary={...state.summary,cwd:'E:/changed'};await assert.rejects(read(),/rejected/);delete state.detailSummary;

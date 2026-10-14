@@ -1,0 +1,53 @@
+# QoderWake CN native control candidate
+
+This module implements Core `agent_discover`, `agent_read`, and `agent_act` through the standard `describe()` / `call()` adapter contract. It uses the installed QoderWake CLI and its existing daemon/authentication. It does not use the Qoder CN SDK, CDP, a private HTTP protocol, a background worker, or a business message queue.
+
+## Operator configuration
+
+Set `AGENT_QODER_WAKE_CONFIG` to an absolute JSON configuration path, or use `~/.codex-agent-core/agent-qoder-wake.json`. See `config.example.json`. This candidate does not write or install a production configuration.
+
+- `cliExecutable`: the explicit existing native executable.
+- `home`: the explicit existing product home, resolved to its real path and passed as `QODERWAKE_HOME` on every native call. Other native authentication settings remain native-owned. An inherited internal `QODERWAKE_DAEMON_URL` is removed to keep the selected home authoritative.
+- `allowedWakerIds`: exact local `agentId` values returned by `local employee list --json`; no assumed `ag_` prefix.
+- `allowedRoots`: existing authorized project directories. Existing Session cwd and new Session cwd are checked against their real paths. Project IDs and Conversation IDs are not inferred from directory or Session IDs.
+- `receiptDir`: a dedicated adapter-owned receipt directory. Obtain `receiptOwnerId(readConfig())` and allocate that owner through Core before mutations. This budget covers adapter receipt files and update peaks only, **not QoderWake's database, transcripts, artifacts, or child model execution**.
+
+Core mutation context must provide its current `registrationKey`, `assertCurrent()` and configured `messageBudget`. Direct standalone mutations without that context are rejected. No version-number gate is used; an unsupported native command or changed JSON shape fails closed.
+
+## Operations
+
+Read operations: `identity`, `list_wakers`, `list_sessions`, `session_status`, `read_session_events`, `list_approvals`, `request_receipt`.
+
+Act operations: `create_session` (`requestId`, `wakerId`, `cwd`, `message`, optional `title`); `send_session_message` (`requestId`, `wakerId`, `sessionId`, `message`); `interrupt_session` (`requestId`, `wakerId`, `sessionId`). Plain `--message` is used; caller-controlled event arrays, model changes, permissions, file attachments, and tool grants are not exposed. Existing-session mutation accepts native `running` / `idle`, except explicit unknown/terminal/released runtime metadata. Ordinary follow-up also accepts the exact observed `status=stopped`, `runtimeState=waiting_input`, `runtimePresence=idle_resident` combination after natural turn completion, or the precise released contract below. All other stopped states are rejected; this is not terminal-stop recovery. Idle residency does not authorize a no-op interrupt. Pending Tool Guard approvals block send/interrupt for that exact Session; another Session's pending approvals do not freeze independent Session creation. The module never approves or bypasses native Tool Guard requests.
+
+Natural SDK release has a second proven follow-up contract: `status=stopped`, `runtimeState=waiting_input`, `runtimePresence=released`, `pid=null`, `sdkTranscriptState=ready`, `runtimeRestartRequired=false`, `runtimeRoute=sdk_local`, `lifecycleProfile=console_conversation`, `selectedRuntimeTransport=process`. All coordinates are required together for send only. Unknown/terminal/incomplete/restart-required combinations and idle-released interrupt remain denied; pending approval stays scoped to the exact Session. The adapter does not manufacture a new Session or grant any permissions to recover this lifecycle.
+
+Metadata queries return only whitelisted product identity, names, IDs, statuses and allowed directories. Raw CLI stdout/stderr, profiles, authentication, MCP configuration, unbounded transcript text and arbitrary native errors are not returned or persisted. Scoped SSE text has the separate bounds below. The actual observed list responses are arrays and Waker detail is a flat object. Approval list and mutation response recognition still require native acceptance validation; incompatible shapes do not dispatch or cannot become accepted.
+
+`read_session_events` uses the exact scoped Session and native `session stream --session-id --from-sequence-num`. Public `fromSequence` is an inclusive nonnegative safe-integer lower bound. The native CLI lower bound is exclusive, so the adapter passes `Math.max(0, fromSequence - 1)` and still checks every observed event against the public inclusive lower bound; zero stays zero as the initial native cursor. `limit` is 1–64 (default 32). Its observer process is bounded to 7 seconds and 256 KiB. Parsing accepts at most 512 SSE data frames, preserves high native sequence values and run/runtime-run coordinates, allows sequence gaps and deduplicates identical event IDs. Only user/assistant text blocks, result text/status and runtime-state metadata are returned. Thinking, images, unknown content blocks, system payloads, execution metrics, account and configuration fields are omitted. Text is capped to 2 KiB per event and 8 KiB per result in UTF-8 bytes. No events are persisted or marked consumed.
+
+An SSE history window is `observed` or `no_evidence`; `complete` and `consumerConfirmed` are always false because the observed native stream has no history-complete marker. A result frame is terminal-event evidence for its named run, not proof that the current request or full Session history completed. `observedThroughSequence` includes skipped metadata; `returnedThroughSequence` identifies the last returned event. If the text budget cannot return any text from a nonempty body event, projection stops before it, including all following metadata. Resume from `returnedThroughSequence + 1` to retrieve that omitted reply; `observedThroughSequence` is observation only and must not advance the safe return cursor. Item/text/byte truncation is explicit; an incomplete final data frame is never returned. Callers must correlate native run IDs and sequence with the current turn, not reuse an earlier success as a later request's result. Only the stream observer is terminated at its bound; neither the native daemon nor the Session is stopped.
+
+Returned text is a bounded preview. A single event longer than 2 KiB remains partial even when reread; there is no body-offset or remainder-retrieval contract here. Cursor continuation recovers later wholly omitted events, not a complete original long body or transcript. Do not increment beyond `Number.MAX_SAFE_INTEGER`; no safe successor is representable at that boundary.
+
+## Receipt boundary
+
+QoderWake's public Session create/send CLI has no caller idempotency key. The adapter writes and fsyncs one exclusive intent before native mutation. The operation, normalized arguments, operator scope and Core registration generation are bound by a fingerprint; message text is not retained. A single store lock protects physical receipt-budget checks and file publication, including concurrent IDs. An accepted receipt requires recognized native success (or a newly created Session ID independently found in the same Waker/project metadata) and successful durable receipt publication.
+
+The intent is already `unknown` before dispatch. Timeout, malformed output, context revocation or a post-dispatch persistence failure remains unknown. Repeating the same `requestId` returns its existing receipt; changed arguments/configuration/generation conflict. The module never retries, switches transport, deletes an uncertain intent, or turns `not_found` into permission to replay. A stale lock after process failure blocks further writes until an operator verifies the writer is gone; it is not auto-stolen. Filesystem/power-loss durability remains dependent on the operator's filesystem.
+
+For future plain-user sends, native acknowledgement is exactly `{results:[{event_id,sequence_num}]}` with one result and no extra/error fields: a bounded valid string event ID and a nonnegative safe integer sequence. Exit 0 or `{success:true}` alone is insufficient. The recognized coordinates are persisted and returned as `nativeAck: {eventId, sequence}` only after receipt publication. Empty/multiple/badly typed/error acknowledgements stay unknown with no replay. Existing unknown records are never upgraded by this recognition or by later event observations. An ACK identifies accepted native input, not an assistant reply, completed turn, or consumed message.
+
+Interrupt uses that same single-event ACK validation, additionally allowing an optional top-level `runtimeState` of string (at most 128 characters) or null. The observed collector did not retain its actual value; no enum or stopping semantics are inferred. That field is neither returned nor persisted. Only valid ACK coordinates plus durable receipt publication yield `accepted`; actual interruption still needs separately scoped runtime-event evidence. Bad metadata types, empty/multiple/error/false or boolean-only responses remain unknown, and old interrupt unknown rows are never replayed or upgraded.
+
+`accepted` means native/local acknowledgement, not actual reading, execution, stopping, completion or business acceptance. `consumerConfirmed` is always false and `completion` always unknown. Root must perform native runtime acceptance separately. The module cannot automatically resolve an uncertain native outcome.
+
+## Deliberately unsupported
+
+Conversation enumeration, `messages send/mention`, native Conversation `claim/read`, Run/Trace observations, terminal stop/resume, control-response JSON, Tool Guard resolution, MCP/Skill installation and resource/role changes are not exposed. Those require their own native target ownership and return-schema evidence. Session IDs do not manufacture Conversation IDs. Wake claim/read belongs to the Wake Conversation owner; it is distinct from Core Mail batch/consumer acknowledgement.
+
+## Validation status
+
+Run `node --test modules/agent-qoder-wake/adapter.test.mjs modules/agent-qoder-wake/source5.test.mjs` from the repository root (or `npm test` in this module). The fixture is a real spawned Node process returning simulated product responses; it never runs QoderWake, a model, or a real Waker. These tests cover offline scope/receipt behavior only. No real create/send/interrupt, formal configuration, installation, resource permission change, or runtime acceptance was performed by the author.
+
+`node modules/agent-qoder-wake/test/oracle-check.mjs` removes the pending-approval gate in a disposable temporary copy and verifies that the regression suite fails. It does not edit the candidate.

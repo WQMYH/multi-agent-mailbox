@@ -34,7 +34,7 @@ const services = {
 const definitions = await describe();
 assert.deepEqual(definitions.map(item => [item.name, item.annotations.readOnlyHint]),
   [["instances", true], ["identity", true], ["toolkit_check", false],
-    ["conversation_activate", false], ["conversation_send_current", false], ["conversation_status", true]]);
+    ["conversation_activate", false], ["conversation_send_current", false], ["conversation_status", true], ["message_observe", true]]);
 assert.equal((await call("instances", {}, services)).instances.length, 1);
 assert.equal((await call("identity", { instanceId, workspace }, services)).identity.productId, "qoder-cn-ide");
 const action = await call("toolkit_check", { instanceId, workspace, requestId,
@@ -80,5 +80,15 @@ await assert.rejects(() => call("identity", { instanceId, workspace, extra: true
 await assert.rejects(() => call("toolkit_check", { instanceId, workspace, requestId,
   command: "px.reloadScriptDocs", targetPath: workspace }, services), /does not accept/);
 await assert.rejects(() => call("missing", {}, services), /Unknown/);
+const observed = { schemaVersion: 1, moduleId: "agent-qoder-ide", ownerId, observedAt: new Date().toISOString(),
+  scope: { kind: "retained" }, coverage: { complete: false, limitations: ["owner_store_unavailable"] },
+  retention: {}, stats: { total: "unknown", byState: {} } };
+assert.deepEqual(await call("message_observe", { view: "stats" }, { config,
+  observeMessages: args => { assert.equal(args.limit, 32); return observed; },
+  assertCurrent: () => assert.fail("observation must not enter mutation gate"),
+  messageBudget: { status: () => assert.fail("observation must not access budget mutation flow") } }), observed);
+await assert.rejects(() => call("message_observe", { view: "detail" }, services), /requires/);
+await assert.rejects(() => call("message_observe", { view: "items", limit: 101 }, services), /limit/);
+await assert.rejects(() => call("message_observe", { view: "items", workspace }, services), /Unknown/);
 
 console.log("agent-qoder-ide adapter tests passed");

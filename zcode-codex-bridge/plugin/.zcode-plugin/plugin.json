@@ -1,7 +1,7 @@
 {
   "name": "zcode-codex-bridge",
   "version": "0.3.1",
-  "description": "Bounded status and result notifications for one existing Codex task",
+  "description": "小折 · Post-Zcode-Zhe — bounded status and result notifications for one existing Codex task",
   "author": { "name": "Local development" },
   "license": "Apache-2.0",
   "skills": "skills",
@@ -32,12 +32,6 @@
       "type": "string",
       "title": "Team label",
       "default": "zcode-codex-poc"
-    },
-    "binding_expires_at": {
-      "type": "string",
-      "title": "Binding expiry",
-      "description": "ISO-8601 timestamp",
-      "required": true
     },
     "expected_reply": {
       "type": "string",

@@ -182,8 +182,12 @@ test('real core: revoke while terminal read is in flight stops claim; new explic
 test('real core: revoke after claim but before CDP send retains unknown reservation', () => fixture(async f => {
   await f.act(a); await f.act(b);
   f.state.terminal = true;
-  // A send, B foreground observation, watcher terminal observation, then B dispatch discovery.
-  f.state.fetchGate = count => { if (count === 4) f.other.disable('agent-qoder'); };
+  // Revoke at the persisted dispatch boundary, independent of discovery read count.
+  f.state.fetchGate = () => {
+    const db = new DatabaseSync(join(f.root, 'send-queue.sqlite'));
+    try { if (db.prepare('SELECT state FROM sends WHERE request_id=?').get(b)?.state === 'dispatching') f.other.disable('agent-qoder'); }
+    finally { db.close(); }
+  };
   await f.tick(); assert.deepEqual(f.sends, [a]); assert.equal(f.timers.size, 0);
   f.other.enable('agent-qoder');
   assert.equal((await f.status()).items[1].state, 'needs_attention');

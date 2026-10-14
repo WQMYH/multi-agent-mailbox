@@ -1,0 +1,8 @@
+{
+  "name": "agent-qoder-wake",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=24" },
+  "scripts": { "test": "node --test adapter.test.mjs source5.test.mjs" }
+}

@@ -5,7 +5,7 @@
   "description": "Multi-Agent Mailbox: shared local CLI/MCP access to mail and optional native agent adapters.",
   "author": { "name": "WQMYH" },
   "interface": {
-    "displayName": "Multi-Agent Mailbox",
+    "displayName": "文枢 · Post-Core",
     "shortDescription": "Exchange local agent messages through three shared tools.",
     "longDescription": "Discover registered mail and native adapters on demand. Keeps registration explicit, separates reads from actions, and preserves durable queue ownership and receipts.",
     "developerName": "WQMYH",

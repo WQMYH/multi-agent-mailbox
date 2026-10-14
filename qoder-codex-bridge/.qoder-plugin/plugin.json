@@ -1,6 +1,7 @@
 {
   "name": "qoder-codex-bridge",
-  "version": "0.1.0",
+  "displayName": "小洞 · Post-Qoder-Dong",
+  "version": "0.1.1",
   "description": "Qoder CN bridge for bound Codex lifecycle notices and explicit task selection with user-authored messages",
   "author": { "name": "Qoder CN Desktop" },
   "license": "Apache-2.0",

@@ -279,7 +279,20 @@ export class ModuleRegistry {
     try {
       const loaded = await cached.promise;
       this.#assertCurrent(record);
-      return loaded;
+      const descriptions = await loaded.module.describe();
+      this.#assertCurrent(record);
+      if (!Array.isArray(descriptions)) fail(`Module ${record.id} describe() must return an array`);
+      const names = new Set();
+      const operations = descriptions.map(operation => {
+        if (!isObject(operation) || !operation.name || typeof operation.description !== "string" ||
+            !isObject(operation.inputSchema) || operation.inputSchema.type !== "object" || !isObject(operation.annotations) ||
+            typeof operation.annotations.readOnlyHint !== "boolean") fail(`Invalid operation description in ${record.id}`);
+        validateOperation(operation.name);
+        if (names.has(operation.name)) fail(`Duplicate operation: ${operation.name}`);
+        names.add(operation.name);
+        return copy(operation);
+      });
+      return { ...loaded, operations };
     } catch (error) {
       if (this.#cache.get(moduleId) === cached) this.#cache.delete(moduleId);
       throw error;
@@ -291,19 +304,6 @@ export class ModuleRegistry {
     this.#assertCurrent(record);
     if (typeof module.describe !== "function" || typeof module.call !== "function")
       fail(`Module ${record.id} must export describe() and call()`);
-    const descriptions = await module.describe();
-    this.#assertCurrent(record);
-    if (!Array.isArray(descriptions)) fail(`Module ${record.id} describe() must return an array`);
-    const names = new Set();
-    const operations = descriptions.map(operation => {
-      if (!isObject(operation) || !operation.name || typeof operation.description !== "string" ||
-          !isObject(operation.inputSchema) || operation.inputSchema.type !== "object" || !isObject(operation.annotations) ||
-          typeof operation.annotations.readOnlyHint !== "boolean") fail(`Invalid operation description in ${record.id}`);
-      validateOperation(operation.name);
-      if (names.has(operation.name)) fail(`Duplicate operation: ${operation.name}`);
-      names.add(operation.name);
-      return copy(operation);
-    });
     const context = Object.freeze({
       registrationKey: JSON.stringify([this.registryPath, record.registrationId, record.revision]),
       assertCurrent: () => this.#assertCurrent(record),
@@ -313,7 +313,7 @@ export class ModuleRegistry {
         check: input => this.checkMessageBudget(input)
       })
     });
-    return { record, module, operations, context };
+    return { record, module, context };
   }
 
   async discover({ moduleId } = {}) {

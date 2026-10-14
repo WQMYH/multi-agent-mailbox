@@ -1,6 +1,6 @@
 {
   "name": "qoder-ide-command-bridge",
-  "displayName": "Qoder IDE Command Bridge",
+  "displayName": "小洞 IDE · Post-Qoder-Dong",
   "description": "Authenticated loopback access to a small allowlist of Qoder IDE commands.",
   "version": "0.2.0",
   "publisher": "wqmyh",
@@ -11,7 +11,7 @@
   "main": "./extension.cjs",
   "contributes": {
     "configuration": {
-      "title": "Qoder IDE Command Bridge",
+      "title": "小洞 IDE · Post-Qoder-Dong",
       "properties": {
         "qoderIdeBridge.configPath": {
           "type": "string",

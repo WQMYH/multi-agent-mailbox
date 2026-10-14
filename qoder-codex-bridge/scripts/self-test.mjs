@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { EventEmitter } from "node:events";
 import { PassThrough, Writable } from "node:stream";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   ALLOWED_HOOKS, ALLOWED_SIGNALS, ALLOWED_SOURCES,
@@ -46,16 +46,16 @@ process.stdout.write(JSON.stringify({ messageBudget: state.messageBudget }) + "\
 const REQ = "f9716ff6-97b3-4f7a-ab1a-1686206b2399";
 const OTHER_REQ = "11111111-2222-3333-4444-555555555555";
 const WORKSPACE = "96003604-76a9-400e-9e50-c7b752977391";
-const SESSION = "78d8fae4-1436-458a-b9c3-96ab1730f3ae";
+const SESSION = "00000000-0000-4000-8000-000000000020";
 const HOOK_SESSION = "sess_bound_01";
-const TARGET_TASK = "01a0b7c0-d0fa-79f3-a566-558eb6f489fc";
-const TARGET_CWD = "E:/Programming/AI/Agents/Codex";
+const TARGET_TASK = "00000000-0000-4000-8000-000000000030";
+const TARGET_CWD = join(root, "target-project");
 const EXPIRES = "2030-01-01T00:00:00Z";
 const REQ_B = "22222222-3333-4444-5555-666666666666";
 const WORKSPACE_B = "33333333-4444-5555-6666-777777777777";
 const SESSION_B = "44444444-5555-6666-7777-888888888888";
 const HOOK_SESSION_B = "sess_bound_02";
-const TARGET_TASK_B = "01a0b73a-1f26-7b73-bbfe-2dbc4c9bc3d4";
+const TARGET_TASK_B = "00000000-0000-4000-8000-000000000040";
 
 function setupBudget(dir, allocatedBytes = 20_000_000) {
   mkdirSync(dir, { recursive: true });
@@ -78,7 +78,7 @@ function makeBinding(dir, requestId = REQ) {
 }
 function writeHostConfig(dir, binding) {
   const script = join(dir, "adapter.mjs"); writeFileSync(script, "");
-  const config = { script, pipePath: "\\\\.\\pipe\\test-only", threadId: binding.targetTaskId, cwd: binding.targetCwd, expiresAt: binding.expiresAt };
+  const config = { script, pipePath: "\\\\.\\pipe\\test-only", threadId: binding.targetTaskId, cwd: binding.targetCwd, expiresAt: "2020-01-01T00:00:00Z" };
   writeFileSync(join(dir, "host-config.json"), JSON.stringify(config));
   return config;
 }
@@ -127,6 +127,22 @@ try {
   assert.equal(binding.hookSessionId, HOOK_SESSION);
   assert(existsSync(join(bindingDir, "binding.json")));
   assert.equal(loadBinding(bindingDir).requestId, REQ);
+
+  const defaultDir = fixture("default-expiry");
+  const cliResult = JSON.parse(execFileSync(process.execPath, [join(dirname(fileURLToPath(import.meta.url)), "configure-binding.mjs"),
+    defaultDir, REQ, WORKSPACE, SESSION, HOOK_SESSION, defaultDir, TARGET_TASK, TARGET_CWD], { encoding: "utf8", windowsHide: true }));
+  assert.equal(cliResult.ok, true);
+  assert.equal(Object.hasOwn(loadBinding(defaultDir, undefined, Date.parse("2035-01-01T00:00:00Z")), "expiresAt"), false);
+  const associationDir = fixture("default-expiry-association");
+  execFileSync(process.execPath, [join(dirname(fileURLToPath(import.meta.url)), "configure-binding.mjs"), "--add",
+    associationDir, REQ, WORKSPACE, SESSION, HOOK_SESSION, associationDir, TARGET_TASK, TARGET_CWD,
+    JSON.stringify({ deliveryId: "delivery-default", ownerId: "qoder.queue.owner", correlation: "default", returnMode: "native_turn" })],
+  { encoding: "utf8", windowsHide: true });
+  assert.equal(loadBindings(associationDir)[0].returnMode, "native_turn");
+  assert.equal(Object.hasOwn(loadBindings(associationDir)[0], "expiresAt"), false);
+  for (const invalidExpiry of [null, "", "not-a-date"])
+    assert.throws(() => createBinding(fixture(`bad-expiry-${String(invalidExpiry)}`), REQ, WORKSPACE, SESSION,
+      HOOK_SESSION, defaultDir, TARGET_TASK, TARGET_CWD, invalidExpiry), /expiresAt/);
 
   const noMapDir = fixture("no-hook-map");
   writeFileSync(join(noMapDir, "binding.json"), JSON.stringify({ ...binding, hookSessionId: undefined }));
@@ -198,8 +214,16 @@ try {
 
   // ---- current Core budget, future-growth reservation, and shared store lock ----
   {
-    const dir = fixture("budget-reserve"), b = makeBinding(dir); writeHostConfig(dir, b);
+    const dir = fixture("budget-reserve"), b = createBinding(dir, REQ, WORKSPACE, SESSION, HOOK_SESSION, dir, TARGET_TASK, TARGET_CWD);
+    writeHostConfig(dir, b);
     const accepted = managedStoreStatus(dir);
+    assert.equal(Object.hasOwn(b, "expiresAt"), false);
+    assert(accepted.reservedBytes > 0, "no-expiry bindings must retain future-growth credit");
+    const realNow = Date.now;
+    try {
+      Date.now = () => Date.parse("2035-01-01T00:00:00Z");
+      assert.equal(managedStoreStatus(dir).reservedBytes, accepted.reservedBytes, "elapsed time must not release a no-expiry reservation");
+    } finally { Date.now = realNow; }
     setAllocation(dir, accepted.usedBytes); // no unreserved byte remains after accepting the binding
     const inputResult = await handle({ hook_event_name: "UserPromptSubmit", session_id: HOOK_SESSION, cwd: dir,
       prompt: `QODER_RETURN_REQUEST=${REQ}` }, { dataDir: dir, transport: mockTransport() });
@@ -455,7 +479,7 @@ writeManagedAtomic(dir, target, payload, { creditKey: "message:" + token });
   assert.throws(() => validateHookInput({ hook_event_name: "Invalid", session_id: "sess_a" }), /hook_event_name/);
   for (const bad of ["", "../etc/passwd", "a/b", "a\\b", "a b", "a.b", "..", "sess\u0000x"])
     assert.throws(() => validateHookInput({ hook_event_name: "Stop", session_id: bad }), /session_id/, `expected reject: ${JSON.stringify(bad)}`);
-  assert(validateHookInput({ hook_event_name: "Stop", session_id: "01a06b03-cd32-7c31-ab2d-961937a69a11" }));
+  assert(validateHookInput({ hook_event_name: "Stop", session_id: "00000000-0000-4000-8000-000000000050" }));
 
   // ---- marker parsing (R1.4: ONLY a whole, standalone marker line is recognised) ----
   // a proper standalone marker line passes, incl. surrounding whitespace, CRLF, and other lines
@@ -617,13 +641,13 @@ writeManagedAtomic(dir, target, payload, { creditKey: "message:" + token });
 
   const crashEvent = buildEvent({ hook_event_name: "StopFailure", session_id: "sess_n" }, nb);
   recordEvent(notifyDir, crashEvent, { binding: nb });
-  await assert.rejects(sendNotification(nb, notifyDir, crashEvent, mockTransport({ crash: true })), /disconnected/);
+  await assert.rejects(sendNotification(nb, notifyDir, crashEvent, mockTransport({ crash: true })), error => error.code === "host_disconnected" && /disconnected/.test(error.message));
   const crashRecord = JSON.parse(readFileSync(join(notifyDir, crashEvent.evidenceRef), "utf8"));
   assert.equal(crashRecord.sent, false); assert.equal(crashRecord.sendState, "uncertain"); assert.equal(crashRecord.dispatchAttempted, true);
 
   const timeoutEvent = buildEvent({ hook_event_name: "UserPromptSubmit", session_id: "sess_n" }, nb);
   recordEvent(notifyDir, timeoutEvent, { binding: nb });
-  await assert.rejects(sendNotification(nb, notifyDir, timeoutEvent, mockTransport({ hang: true })), /timed out/);
+  await assert.rejects(sendNotification(nb, notifyDir, timeoutEvent, mockTransport({ hang: true })), error => error.code === "host_timeout" && /timed out/.test(error.message));
 
   // R3: host ACKs but the durable receipt update is broken -> never claim success
   const ackBreakDir = fixture("ackbreak"); const ab = makeBinding(ackBreakDir); writeHostConfig(ackBreakDir, ab);
@@ -635,6 +659,11 @@ writeManagedAtomic(dir, target, payload, { creditKey: "message:" + token });
 
   // ---- loadHostConfig: every config failure carries a top-level code (R4) ----
   assert.equal(loadHostConfig(notifyDir, nb).threadId, nb.targetTaskId);
+  const noExpiryDir = fixture("host-no-expiry"); const noExpiryBinding = makeBinding(noExpiryDir);
+  const noExpiryConfig = writeHostConfig(noExpiryDir, noExpiryBinding);
+  delete noExpiryConfig.expiresAt;
+  writeFileSync(join(noExpiryDir, "host-config.json"), JSON.stringify(noExpiryConfig));
+  assert.equal(loadHostConfig(noExpiryDir, noExpiryBinding).threadId, noExpiryBinding.targetTaskId);
   const wrongTaskDir = fixture("wrong-task"); const wb = makeBinding(wrongTaskDir); writeHostConfig(wrongTaskDir, wb);
   writeFileSync(join(wrongTaskDir, "host-config.json"), JSON.stringify({ script: join(wrongTaskDir, "adapter.mjs"), pipePath: "\\\\.\\pipe\\test-only", threadId: "other", cwd: wb.targetCwd, expiresAt: wb.expiresAt }));
   assert.throws(() => loadHostConfig(wrongTaskDir, wb), e => e.code === "host_task_mismatch");

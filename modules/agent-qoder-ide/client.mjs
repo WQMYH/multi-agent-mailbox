@@ -1,6 +1,8 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
+import messageStore from "./runtime/message-observe.cjs";
+import { validateMessageObserveArgs, validateMessageObservation } from "./runtime/core-contracts.mjs";
 
 export const toolkitCommands = Object.freeze([
   "px.runTiger",
@@ -130,4 +132,8 @@ export async function sendCurrentConversation(args, config = readConfig()) {
 
 export async function readConversationStatus(args, config = readConfig()) {
   return request(config, args.instanceId, "/v1/conversation/status", args);
+}
+
+export function observeMessages(args, config = readConfig()) {
+  return validateMessageObservation(messageStore.observeMessages(config.stateDir, validateMessageObserveArgs(args)));
 }

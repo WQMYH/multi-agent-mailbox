@@ -16,7 +16,7 @@ try {
   mkdirSync(workspace); symlinkSync(workspace, cwdAlias, process.platform === "win32" ? "junction" : "dir");
   const env = {
     ZCC_CODEX_SCRIPT: script,
-    ZCC_CODEX_THREAD_ID: "01a06b03-cd32-7c31-ab2d-961937a69a11",
+    ZCC_CODEX_THREAD_ID: "00000000-0000-4000-8000-000000000050",
     ZCC_CODEX_CWD: cwdAlias,
     ZCC_SOURCE_SESSION_ID: "sess_364f3d09-4b3d-4db4-811f-3624dde5a68f",
     ZCC_TEAM_ID: "zcode-codex-poc",
@@ -134,8 +134,8 @@ try {
     assert(!simulated.methods.includes("turn/start"));
   }
   const expiredTransport = transport();
-  await assert.rejects(sendFixedReplyTest({ ...binding, expiresAt: "2000-01-01T00:00:00Z" }, expiredTransport), /expired/);
-  assert(!expiredTransport.methods.includes("turn/start"));
+  assert((await sendFixedReplyTest({ ...binding, expiresAt: "2000-01-01T00:00:00Z" }, expiredTransport)).replyMatched);
+  assert.equal(expiredTransport.methods.filter(method => method === "turn/start").length, 1, "Offline injected sender has no date gate; live sender remains blocked");
   await assert.rejects(sendFixedReplyTest(binding, transport({ disconnect: true })), /exited/);
   await assert.rejects(sendFixedReplyTest(binding, transport({ hang: true })), /timed out/);
 
@@ -167,16 +167,13 @@ try {
   assert.deepEqual(configured.hostReports, { count: 0, maxRecords: MAX_HOST_REPORTS, full: false, states: {}, invalid: 0 });
   assert.match(configured.setupHint, /codex_thread_read/);
   for (const [envPatch, hostPatch, codes] of [
-    [{ ZCC_BINDING_EXPIRES_AT: "2000-01-01T00:00:00Z" }, {}, ["binding_invalid"]],
-    [{ ZCC_BINDING_EXPIRES_AT: "invalid" }, {}, ["binding_invalid"]],
     [{}, { threadId: "other" }, ["host_task_mismatch"]],
     [{}, { cwd: root }, ["host_cwd_mismatch"]],
-    [{}, { expiresAt: "2000-01-01T00:00:00Z" }, ["host_expired"]],
     [{}, { script: join(root, "missing-adapter.mjs") }, ["host_adapter_unavailable"]],
     [{}, { pipePath: "invalid-secret-pipe" }, ["host_pipe_invalid"]],
     [{ ZCC_BINDING_EXPIRES_AT: "2000-01-01T00:00:00Z" },
       { threadId: "other", expiresAt: "2000-01-01T00:00:00Z", script: join(root, "missing-adapter.mjs") },
-      ["binding_invalid", "host_task_mismatch", "host_expired", "host_adapter_unavailable"]]
+      ["host_task_mismatch", "host_adapter_unavailable"]]
   ]) {
     const savedHost = JSON.stringify({ ...hostConfig, ...hostPatch });
     writeFileSync(hostConfigPath, savedHost);
@@ -194,12 +191,12 @@ try {
   writeFileSync(hostConfigPath, "null");
   assert.equal((await callTool("codex_binding_status", {}, statusDeps)).diagnostics[0].code, "host_config_unreadable");
   writeFileSync(hostConfigPath, JSON.stringify(hostConfig));
-  const expiredEnv = { ...env, ZCC_BINDING_EXPIRES_AT: "2000-01-01T00:00:00Z" };
+  const invalidSourceEnv = { ...env, ZCC_SOURCE_SESSION_ID: "invalid" };
   for (const name of ["codex_thread_read", "codex_host_report"])
     await assert.rejects(callTool(name, name === "codex_host_report" ? { requestId: "status-must-not-send", report } : {},
-      { ...statusDeps, env: expiredEnv }), /expiry/);
+      { ...statusDeps, env: invalidSourceEnv }), /source/);
   await handleGateway({ jsonrpc: "2.0", id: 5, method: "tools/call", params: { name: "codex_binding_status", arguments: {} } }, state,
-    { send: value => messages.push(value), invoke: (name, args) => callTool(name, args, { ...statusDeps, env: expiredEnv }) });
+    { send: value => messages.push(value), invoke: (name, args) => callTool(name, args, { ...statusDeps, env: invalidSourceEnv }) });
   assert.equal(messages.at(-1).error, undefined);
   assert.equal(JSON.parse(messages.at(-1).result.content[0].text).diagnostics[0].code, "binding_invalid");
   const absentData = join(root, "status-must-not-create");
@@ -228,7 +225,7 @@ try {
   assert.deepEqual(routed[3], { requireIdle: false, report });
   await assert.rejects(callTool("codex_host_report", { requestId: "raw-prompt", report: { ...report, prompt: "do work" } }, deps), /Invalid report payload/);
   let hostSends = 0, listCalls = 0;
-  function hostTransport({ wrongTarget = false, lostAck = false, expireBeforeSend = false, idle = false, unloaded = false,
+  function hostTransport({ wrongTarget = false, lostAck = false, idle = false, unloaded = false,
       readDelay = 0, requireIdle = false, report: reportValue = report, listResult = null } = {}) {
     return { timeoutMs: 50, requireIdle, report: reportValue, spawnProcess: (_node, args, options) => {
       assert.deepEqual(args, [script]);
@@ -249,7 +246,6 @@ try {
             } else if (name === "read_thread") {
               assert.equal(values.threadId, binding.threadId);
               result = { thread: { id: wrongTarget ? "other" : binding.threadId, cwd: cwdAlias, status: { type: unloaded ? "notLoaded" : idle ? "idle" : "active" } }, turns: [{ private: "never expose" }] };
-              if (expireBeforeSend) binding.expiresAt = "2000-01-01T00:00:00Z";
             } else {
               assert.equal(values.threadId, binding.threadId);
               assert.equal(name, "send_message_to_thread"); hostSends++;
@@ -317,9 +313,6 @@ try {
   await assert.rejects(hostOperation(binding, root, "host-wrong", hostTransport({ wrongTarget: true })), /match binding/);
   await assert.rejects(hostOperation({ ...binding, sourceSessionId: "sess_other" }, root, "host-one", hostTransport()), /conflicts/);
   await assert.rejects(hostOperation({ ...binding, expectedReply: "OTHER_TOKEN" }, root, "host-one", hostTransport()), /conflicts/);
-  const savedExpiry = binding.expiresAt;
-  assert.equal((await hostOperation(binding, root, "host-expired", hostTransport({ expireBeforeSend: true }))).state, "uncertain");
-  assert.equal(hostSends, 3); binding.expiresAt = savedExpiry;
   const active = await hostOperation(binding, root, "still-active", hostTransport({ requireIdle: true }));
   assert.equal(active.state, "not_idle"); assert.equal(JSON.parse(readFileSync(join(root, "host-report-still-active.json"))).state, "not_idle");
   const activeDuplicate = await hostOperation(binding, root, "still-active", hostTransport({ requireIdle: true, idle: true }));
@@ -356,7 +349,9 @@ try {
   await assert.rejects(hostOperation(binding, limitRoot, "over-limit", hostTransport()), /receipt limit reached/);
   assert.deepEqual(await hostOperation(binding, limitRoot, undefined, { ...hostTransport({ listResult }), view: "active_count" }), count);
   writeFileSync(hostConfigPath, JSON.stringify({ ...hostConfig, expiresAt: "2000-01-01T00:00:00Z" }));
-  await assert.rejects(hostOperation(binding, root, "host-stale", hostTransport()), /expired/);
+  const beforeStale = hostSends;
+  assert.equal((await hostOperation(binding, root, "host-stale", hostTransport())).state, "accepted");
+  assert.equal(hostSends, beforeStale + 1);
 
   for (let index = 0; index < 201; index++) recordProbe({ hook_event_name: "UserPromptSubmit", session_id: "sess_test", prompt: "do not persist" },
     { env, now: () => new Date(index * 1000) });

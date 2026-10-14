@@ -3,12 +3,13 @@ import { homedir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 
 const fields = {
+  cliExecutable: 'QODER_CLI_EXECUTABLE',
   cdpPort: 'QODER_DESKTOP_CDP_PORT',
   workspaceId: 'QODER_CONTROL_WORKSPACE_ID',
   root: 'QODER_CONTROL_ROOT',
   deliveryDir: 'QODER_DELIVERY_DIR'
 };
-const returnFields = new Set(['returnModulePath', 'returnDataDir']);
+const returnFields = new Set(['returnModulePath', 'returnDataDir', 'desktopDatabasePath', 'desktopArchivePath']);
 
 function validate(config) {
   if (!config || typeof config !== 'object' || Array.isArray(config)) throw Error('Qoder configuration must be a JSON object');
@@ -23,6 +24,8 @@ function validate(config) {
   }
   if ((config.returnModulePath === undefined) !== (config.returnDataDir === undefined))
     throw Error('Qoder return module and data directory must be configured together');
+  if ((config.desktopDatabasePath === undefined) !== (config.desktopArchivePath === undefined))
+    throw Error('Qoder desktop database and installed archive must be configured together');
   return config;
 }
 
